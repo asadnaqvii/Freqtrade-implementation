@@ -1,0 +1,90 @@
+# Crypto Investment Platform - Git Ignore
+
+# CRITICAL: Never commit these files with real credentials!
+config/config.json
+config/config_*.json
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Freqtrade User Data
+user_data/
+!user_data/.gitkeep
+*.log
+
+# API Keys and Secrets
+.env
+.env.local
+secrets.json
+api_keys.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Backtest and Trading Data
+*.pickle
+*.pkl
+*.feather
+
+# Temporary files
+*.tmp
+*.bak
+tmp/
+temp/
+
+# System files
+Thumbs.db
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Keep directory structure
+!user_data/data/.gitkeep
+!user_data/logs/.gitkeep
+!user_data/backtest_results/.gitkeep
+!config/templates/.gitkeep
