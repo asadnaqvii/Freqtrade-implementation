@@ -17,8 +17,5 @@ WORKDIR /freqtrade
 # Expose API port
 EXPOSE 8080
 
-# Start script
-COPY --chown=ftuser:ftuser start.sh /freqtrade/start.sh
-RUN chmod +x /freqtrade/start.sh
-
-CMD ["/freqtrade/start.sh"]
+# Start command - substitute env vars and run
+CMD ["sh", "-c", "envsubst < /freqtrade/config/config.template.json > /freqtrade/config/config.json && freqtrade trade --config /freqtrade/config/config.json --strategy ActiveTrader"]
