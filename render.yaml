@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: freqtrade-bot
+    env: docker
+    plan: starter
+    healthCheckPath: /api/v1/ping
+    envVars:
+      - key: FREQTRADE__EXCHANGE__KEY
+        sync: false
+      - key: FREQTRADE__EXCHANGE__SECRET
+        sync: false
+      - key: FREQTRADE__EXCHANGE__PASSWORD
+        sync: false
