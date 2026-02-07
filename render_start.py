@@ -3,6 +3,15 @@ import os
 import json
 import subprocess
 
+# Set up proxy for non-US access (KuCoin blocks US IPs)
+# Using a free proxy service - you may need to update this
+proxy_url = os.environ.get("PROXY_URL", "")
+if proxy_url:
+    os.environ["HTTP_PROXY"] = proxy_url
+    os.environ["HTTPS_PROXY"] = proxy_url
+    os.environ["ALL_PROXY"] = proxy_url
+    print(f"Proxy configured: {proxy_url[:30]}...")
+
 # Create config from environment variables
 config = {
     "max_open_trades": 2,
@@ -39,7 +48,13 @@ config = {
         "key": os.environ.get("FREQTRADE__EXCHANGE__KEY", ""),
         "secret": os.environ.get("FREQTRADE__EXCHANGE__SECRET", ""),
         "password": os.environ.get("FREQTRADE__EXCHANGE__PASSWORD", ""),
-        "ccxt_config": {},
+        "ccxt_config": {
+            "aiohttp_trust_env": True,
+            "proxies": {
+                "http": os.environ.get("PROXY_URL", None),
+                "https": os.environ.get("PROXY_URL", None)
+            } if os.environ.get("PROXY_URL") else {}
+        },
         "ccxt_async_config": {
             "aiohttp_trust_env": True
         },
