@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: freqtrade-bot
+    runtime: python
+    plan: starter
+    buildCommand: chmod +x build.sh && ./build.sh
+    startCommand: python render_start.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.6"
+      - key: PORT
+        value: "8080"
+      - key: FREQTRADE__EXCHANGE__KEY
+        sync: false
+      - key: FREQTRADE__EXCHANGE__SECRET
+        sync: false
+      - key: FREQTRADE__EXCHANGE__PASSWORD
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: API_USERNAME
+        sync: false
+      - key: API_PASSWORD
+        sync: false

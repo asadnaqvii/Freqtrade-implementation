@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 import os
+import sys
 import json
 import subprocess
 
-# Set up proxy for non-US access (KuCoin blocks US IPs)
-# Using a free proxy service - you may need to update this
-proxy_url = os.environ.get("PROXY_URL", "")
-if proxy_url:
-    os.environ["HTTP_PROXY"] = proxy_url
-    os.environ["HTTPS_PROXY"] = proxy_url
-    os.environ["ALL_PROXY"] = proxy_url
-    print(f"Proxy configured: {proxy_url[:30]}...")
+# Set TA-Lib library path for runtime
+ta_lib_path = os.path.join(os.path.expanduser("~"), "ta-lib", "lib")
+if os.path.exists(ta_lib_path):
+    current_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    os.environ["LD_LIBRARY_PATH"] = f"{ta_lib_path}:{current_ld}" if current_ld else ta_lib_path
+
+# Validate required environment variables
+required_vars = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
+missing = [v for v in required_vars if not os.environ.get(v)]
+if missing:
+    print(f"WARNING: Missing environment variables: {', '.join(missing)}")
+    print("Bot will start but cannot connect to exchange for live trading.")
 
 # Create config from environment variables
 config = {
@@ -48,13 +53,7 @@ config = {
         "key": os.environ.get("FREQTRADE__EXCHANGE__KEY", ""),
         "secret": os.environ.get("FREQTRADE__EXCHANGE__SECRET", ""),
         "password": os.environ.get("FREQTRADE__EXCHANGE__PASSWORD", ""),
-        "ccxt_config": {
-            "aiohttp_trust_env": True,
-            "proxies": {
-                "http": os.environ.get("PROXY_URL", None),
-                "https": os.environ.get("PROXY_URL", None)
-            } if os.environ.get("PROXY_URL") else {}
-        },
+        "ccxt_config": {},
         "ccxt_async_config": {
             "aiohttp_trust_env": True
         },
@@ -108,9 +107,11 @@ os.makedirs("user_data/strategies", exist_ok=True)
 os.system("cp strategies/*.py user_data/strategies/ 2>/dev/null || true")
 
 # Start freqtrade
-subprocess.run([
+print(f"Starting freqtrade on port {config['api_server']['listen_port']}...")
+result = subprocess.run([
     "freqtrade", "trade",
     "--config", "config/config.json",
     "--strategy", "ActiveTrader",
     "--userdir", "user_data"
 ])
+sys.exit(result.returncode)
