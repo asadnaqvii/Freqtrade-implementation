@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir numpy
 RUN pip install --no-cache-dir TA-Lib
 RUN pip install --no-cache-dir freqtrade
 
+# Install FreqUI web dashboard
+RUN freqtrade install-ui
+
 # Copy project files
 COPY strategies/ ./strategies/
 COPY config/ ./config/
