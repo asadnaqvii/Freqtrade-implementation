@@ -47,7 +47,7 @@ port = int(os.environ.get("PORT", 10000))
 
 # Create config from environment variables
 config = {
-    "max_open_trades": 2,
+    "max_open_trades": 3,
     "stake_currency": "USDT",
     "stake_amount": 1.0,
     "tradable_balance_ratio": 0.99,
@@ -118,8 +118,8 @@ config = {
     "internals": {
         "process_throttle_secs": 5
     },
-    "strategy": "ActiveTrader",
-    "stoploss": -0.05
+    "strategy": "MeanReversionScalper",
+    "stoploss": -0.004
 }
 
 # Write config file
@@ -142,7 +142,7 @@ sys.stderr.flush()
 os.execvp("freqtrade", [
     "freqtrade", "trade",
     "--config", "config/config.json",
-    "--strategy", "ActiveTrader",
+    "--strategy", "MeanReversionScalper",
     "--strategy-path", "strategies",
     "--userdir", "user_data"
 ])
