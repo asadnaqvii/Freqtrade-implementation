@@ -1,5 +1,5 @@
 """
-5-Minute Mean Reversion Scalping Strategy (Bollinger + RSI)
+5-Minute Mean Reversion Scalping Strategy (Bollinger + RSI) (Manit's strategy)
 Risk Level: Medium
 Best For: High-liquidity pairs in ranging markets
 
@@ -40,9 +40,11 @@ class MeanReversionScalper(IStrategy):
     # BB(20) needs ~25 candles to warm up, RSI(14) needs ~20
     startup_candle_count: int = 30
 
-    # Conservative position sizing — 1-2% risk per trade
-    # Max 3 concurrent trades across all pairs
-    max_open_trades = 3
+    # Allow enough concurrent trades for 3 pairs generating signals
+    max_open_trades = 6
+
+    # Enable shorting (for futures mode)
+    can_short = True
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         # Bollinger Bands (20, 2 std dev)
@@ -59,21 +61,28 @@ class MeanReversionScalper(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Long entry: oversold bounce
         dataframe.loc[
             (
-                # Price closes below lower Bollinger Band
                 (dataframe['close'] < dataframe['bb_lower']) &
-                # RSI oversold (< 30)
                 (dataframe['rsi'] < 30) &
-                # Volume above 20-period average
                 (dataframe['volume'] > dataframe['volume_ma']) &
                 (dataframe['volume'] > 0)
             ),
             'enter_long'] = 1
 
+        # Short entry: overbought reversal (futures only)
+        dataframe.loc[
+            (
+                (dataframe['close'] > dataframe['bb_upper']) &
+                (dataframe['rsi'] > 70) &
+                (dataframe['volume'] > dataframe['volume_ma']) &
+                (dataframe['volume'] > 0)
+            ),
+            'enter_short'] = 1
+
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         # Exit handled by minimal_roi (+0.5%) and stoploss (-0.4%)
-        # No indicator-based exit needed
         return dataframe
