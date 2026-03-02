@@ -43,8 +43,8 @@ class MeanReversionScalper(IStrategy):
     # Allow enough concurrent trades for 3 pairs generating signals
     max_open_trades = 6
 
-    # Enable shorting (for futures mode)
-    can_short = True
+    # Shorting disabled for spot trading — enable if using futures
+    can_short = False
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         # Bollinger Bands (20, 2 std dev)
