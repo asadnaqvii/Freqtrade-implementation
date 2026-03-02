@@ -2,7 +2,11 @@
 import os
 import sys
 import json
-import subprocess
+
+print("=== Render Start Script ===")
+print(f"Python: {sys.version}")
+print(f"HOME: {os.path.expanduser('~')}")
+print(f"PWD: {os.getcwd()}")
 
 # Set TA-Lib library path for runtime - check multiple possible locations
 ta_lib_candidates = [
@@ -14,8 +18,23 @@ current_ld = os.environ.get("LD_LIBRARY_PATH", "")
 for ta_lib_path in ta_lib_candidates:
     if os.path.exists(ta_lib_path) and ta_lib_path not in current_ld:
         current_ld = f"{ta_lib_path}:{current_ld}" if current_ld else ta_lib_path
+        print(f"Found TA-Lib at: {ta_lib_path}")
 os.environ["LD_LIBRARY_PATH"] = current_ld
-print(f"LD_LIBRARY_PATH set to: {current_ld}")
+print(f"LD_LIBRARY_PATH: {current_ld}")
+
+# Verify TA-Lib can be loaded
+try:
+    import talib
+    print(f"TA-Lib Python module loaded successfully (version: {talib.__version__})")
+except ImportError as e:
+    print(f"WARNING: TA-Lib import failed: {e}")
+    print("Attempting to find libta_lib.so...")
+    for path in ta_lib_candidates:
+        so_file = os.path.join(path, "libta_lib.so.0")
+        if os.path.exists(so_file):
+            print(f"  Found: {so_file}")
+        else:
+            print(f"  Not found: {so_file}")
 
 # Validate required environment variables
 required_vars = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
@@ -24,6 +43,8 @@ if missing:
     print(f"WARNING: Missing environment variables: {', '.join(missing)}")
     print("Bot will start but cannot connect to exchange for live trading.")
 
+port = int(os.environ.get("PORT", 10000))
+
 # Create config from environment variables
 config = {
     "max_open_trades": 2,
@@ -31,7 +52,7 @@ config = {
     "stake_amount": 1.0,
     "tradable_balance_ratio": 0.99,
     "fiat_display_currency": "USD",
-    "dry_run": False,
+    "dry_run": os.environ.get("DRY_RUN", "false").lower() == "true",
     "dry_run_wallet": 1000,
     "cancel_open_orders_on_exit": False,
     "unfilledtimeout": {
@@ -83,7 +104,7 @@ config = {
     "api_server": {
         "enabled": True,
         "listen_ip_address": "0.0.0.0",
-        "listen_port": int(os.environ.get("PORT", 8080)),
+        "listen_port": port,
         "verbosity": "error",
         "enable_openapi": True,
         "jwt_secret_key": os.environ.get("JWT_SECRET_KEY", "supersecretkey"),
@@ -106,20 +127,22 @@ os.makedirs("config", exist_ok=True)
 with open("config/config.json", "w") as f:
     json.dump(config, f, indent=2)
 
-print("Config created successfully!")
+print(f"Config created: dry_run={config['dry_run']}, port={port}")
 print(f"Exchange key configured: {'Yes' if config['exchange']['key'] else 'No'}")
 
 # Copy strategies to user_data
 os.makedirs("user_data/strategies", exist_ok=True)
 os.system("cp strategies/*.py user_data/strategies/ 2>/dev/null || true")
 
-# Start freqtrade
-print(f"Starting freqtrade on port {config['api_server']['listen_port']}...")
-result = subprocess.run([
+# Start freqtrade with stdout/stderr unbuffered
+print(f"Starting freqtrade on port {port}...", flush=True)
+sys.stdout.flush()
+sys.stderr.flush()
+
+os.execvp("freqtrade", [
     "freqtrade", "trade",
     "--config", "config/config.json",
     "--strategy", "ActiveTrader",
     "--strategy-path", "strategies",
     "--userdir", "user_data"
 ])
-sys.exit(result.returncode)
