@@ -4,11 +4,18 @@ import sys
 import json
 import subprocess
 
-# Set TA-Lib library path for runtime
-ta_lib_path = os.path.join(os.path.expanduser("~"), "ta-lib", "lib")
-if os.path.exists(ta_lib_path):
-    current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LD_LIBRARY_PATH"] = f"{ta_lib_path}:{current_ld}" if current_ld else ta_lib_path
+# Set TA-Lib library path for runtime - check multiple possible locations
+ta_lib_candidates = [
+    os.path.join(os.path.expanduser("~"), "ta-lib", "lib"),
+    "/opt/render/project/ta-lib/lib",
+    "/opt/render/.local/ta-lib/lib",
+]
+current_ld = os.environ.get("LD_LIBRARY_PATH", "")
+for ta_lib_path in ta_lib_candidates:
+    if os.path.exists(ta_lib_path) and ta_lib_path not in current_ld:
+        current_ld = f"{ta_lib_path}:{current_ld}" if current_ld else ta_lib_path
+os.environ["LD_LIBRARY_PATH"] = current_ld
+print(f"LD_LIBRARY_PATH set to: {current_ld}")
 
 # Validate required environment variables
 required_vars = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
@@ -112,6 +119,7 @@ result = subprocess.run([
     "freqtrade", "trade",
     "--config", "config/config.json",
     "--strategy", "ActiveTrader",
+    "--strategy-path", "strategies",
     "--userdir", "user_data"
 ])
 sys.exit(result.returncode)
