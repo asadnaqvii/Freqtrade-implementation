@@ -28,6 +28,7 @@ pip install --upgrade pip
 pip install numpy
 TA_LIBRARY_PATH=$HOME/ta-lib/lib TA_INCLUDE_PATH=$HOME/ta-lib/include pip install TA-Lib
 pip install freqtrade
+pip install -r requirements.txt
 
 echo "=== Creating user_data directories ==="
 mkdir -p user_data/strategies user_data/data user_data/logs user_data/backtest_results
