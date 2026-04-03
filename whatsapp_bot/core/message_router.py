@@ -129,11 +129,14 @@ class MessageRouter:
                 from whatsapp_bot.config import settings
                 balance = await self.ft.get_balance()
                 open_trades = await self.ft.get_status()
-                bot_state = await self.ft.get_state()
+                bot_config = await self.ft.get_config()
                 strategy = db.get_active_strategy(user.id)
                 status = {
                     "freqtrade_url": settings.freqtrade_api_url,
-                    "bot_state": bot_state,
+                    "bot_state": bot_config.get("state", "unknown"),
+                    "strategy_running": bot_config.get("strategy", "unknown"),
+                    "trading_mode": bot_config.get("trading_mode", "unknown"),
+                    "dry_run": bot_config.get("dry_run", None),
                     "balance": balance,
                     "open_trades": len(open_trades),
                     "active_strategy": strategy.strategy_name if strategy else None,

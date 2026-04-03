@@ -78,10 +78,6 @@ class FreqtradeClient:
         """Get current bot configuration."""
         return await self._request("GET", "/api/v1/show_config")
 
-    async def get_state(self) -> dict:
-        """Get bot running state."""
-        return await self._request("GET", "/api/v1/state")
-
     # ── Trade Actions ──────────────────────────────────────
 
     async def force_entry(self, pair: str, side: str = "long", stake_amount: Optional[float] = None) -> dict:
