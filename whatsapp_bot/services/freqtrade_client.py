@@ -31,7 +31,7 @@ class FreqtradeClient:
         """Authenticate and return JWT token."""
         resp = await client.post(
             f"{self.base_url}/api/v1/token/login",
-            data={"username": self.username, "password": self.password},
+            auth=(self.username, self.password),
         )
         resp.raise_for_status()
         self._token = resp.json()["access_token"]
