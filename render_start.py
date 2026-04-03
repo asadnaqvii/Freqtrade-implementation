@@ -47,7 +47,7 @@ port = int(os.environ.get("PORT", 10000))
 
 # Create config from environment variables
 config = {
-    "max_open_trades": 3,
+    "max_open_trades": 6,
     "stake_currency": "USDT",
     "stake_amount": 1.0,
     "tradable_balance_ratio": 0.99,
@@ -87,7 +87,9 @@ config = {
         },
         "pair_whitelist": [
             "BTC/USDT",
-            "ETH/USDT"
+            "ETH/USDT",
+            "SOL/USDT",
+            "ADA/USDT"
         ],
         "pair_blacklist": []
     },
