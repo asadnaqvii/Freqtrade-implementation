@@ -4,7 +4,7 @@ General handlers — greetings, help, fallback.
 
 from __future__ import annotations
 
-HELP_MESSAGE = """*Neuronaq Trading Bot — Quick Guide*
+HELP_MESSAGE = """*Evzino Trading Bot — Quick Guide*
 
 Here's what you can ask me:
 

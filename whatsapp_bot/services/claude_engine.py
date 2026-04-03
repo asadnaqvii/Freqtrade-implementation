@@ -177,7 +177,7 @@ def build_system_prompt(user: User, strategy: Strategy | None) -> str:
 
     from whatsapp_bot.config import settings
 
-    return f"""You are the Neuronaq Trading Assistant — an AI-powered crypto trading bot operating inside WhatsApp.
+    return f"""You are the Evzino Trading Assistant — an AI-powered crypto trading bot operating inside WhatsApp.
 
 PERSONALITY:
 - Friendly, concise, and professional
@@ -334,7 +334,7 @@ Respond with EXACTLY this structure:
             model=settings.openai_model,
             max_tokens=800,
             messages=[
-                {"role": "system", "content": "You are a crypto strategy advisor for Neuronaq Trading Bot."},
+                {"role": "system", "content": "You are a crypto strategy advisor for Evzino Trading Bot."},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -371,7 +371,7 @@ If no adjustment needed, respond with "NO_ADJUSTMENT_NEEDED" only.
             model=settings.openai_model,
             max_tokens=600,
             messages=[
-                {"role": "system", "content": "You are a crypto macro analyst for Neuronaq Trading Bot."},
+                {"role": "system", "content": "You are a crypto macro analyst for Evzino Trading Bot."},
                 {"role": "user", "content": prompt},
             ],
         )

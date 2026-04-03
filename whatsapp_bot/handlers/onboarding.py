@@ -39,7 +39,7 @@ async def handle_onboarding(
         db.update_user(user.id, {"onboarding_step": "ask_name"})
         await wa.send_text(
             user.whatsapp_number,
-            "Welcome to *Neuronaq Trading Bot*!\n\n"
+            "Welcome to *Evzino Trading Bot*!\n\n"
             "I'm your AI-powered crypto trading assistant. "
             "Let's get you set up in under 2 minutes.\n\n"
             "First — what's your name?"

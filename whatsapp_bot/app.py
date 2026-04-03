@@ -28,14 +28,14 @@ router = MessageRouter()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    logger.info("Neuronaq WhatsApp Bot starting on port %s", settings.port)
+    logger.info("Evzino WhatsApp Bot starting on port %s", settings.port)
     start_scheduler()
     yield
     stop_scheduler()
-    logger.info("Neuronaq WhatsApp Bot stopped.")
+    logger.info("Evzino WhatsApp Bot stopped.")
 
 
-app = FastAPI(title="Neuronaq WhatsApp Trading Bot", lifespan=lifespan)
+app = FastAPI(title="Evzino WhatsApp Trading Bot", lifespan=lifespan)
 
 
 # ── Health Check ───────────────────────────────────────────
@@ -100,7 +100,7 @@ async def dashboard():
 <html>
 <head>
     <meta http-equiv="refresh" content="0; url={ft_url}">
-    <title>Neuronaq — Freqtrade Dashboard</title>
+    <title>Evzino — Freqtrade Dashboard</title>
 </head>
 <body>
     <p>Redirecting to your Freqtrade dashboard at <a href="{ft_url}">{ft_url}</a>...</p>
