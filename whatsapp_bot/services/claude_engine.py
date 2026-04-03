@@ -92,37 +92,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "switch_strategy",
-            "description": "Switch to a different trading strategy. Available: ConservativeRSI, EMACrossover, BollingerBreakout, ActiveTrader, MeanReversionScalper, EMACrossoverScalper.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "strategy_name": {"type": "string", "description": "Name of the strategy to activate"},
-                    "reason": {"type": "string", "description": "Why this strategy is being recommended"},
-                },
-                "required": ["strategy_name", "reason"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_strategy_params",
-            "description": "Update strategy parameters like stoploss, max trades, or timeframe.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "stoploss_pct": {"type": "number", "description": "Stop loss percentage (negative, e.g. -5.0)"},
-                    "max_open_trades": {"type": "integer", "description": "Maximum concurrent trades"},
-                    "timeframe": {"type": "string", "description": "Candle timeframe e.g. 1m, 5m, 15m, 1h"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "get_market_price",
             "description": "Get the current price and 24h stats for a trading pair.",
             "parameters": {
@@ -214,7 +183,7 @@ AVAILABLE PAIRS: BTC/USDT, ETH/USDT, SOL/USDT, ADA/USDT
 RULES:
 - For force_entry and force_exit: ALWAYS ask for explicit user confirmation before executing.
   Present the trade details and ask "Shall I proceed? (Yes/No)"
-- For switch_strategy and update_strategy_params: explain what will change and ask for confirmation.
+- Strategy switching is NOT available right now. If the user asks to switch strategies, tell them: "Strategy switching isn't available yet — the bot is currently running EMACrossoverScalper. This feature is coming soon."
 - When the user asks about the market or trends, use the analyze_trend tool.
 - Keep responses concise — WhatsApp messages should be scannable, not essays.
 - When the user asks to see their dashboard, give them the Freqtrade URL.
