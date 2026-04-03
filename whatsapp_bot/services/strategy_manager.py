@@ -20,6 +20,7 @@ STRATEGY_DEFAULTS = {
     "BollingerBreakout": {"stoploss_pct": -8.0, "max_open_trades": 4, "timeframe": "5m", "roi_config": {"0": 0.25, "30": 0.18, "80": 0.12, "150": 0.08}},
     "ActiveTrader": {"stoploss_pct": -3.0, "max_open_trades": 5, "timeframe": "1m", "roi_config": {"0": 0.03, "15": 0.02, "30": 0.01, "60": 0.005}},
     "MeanReversionScalper": {"stoploss_pct": -0.4, "max_open_trades": 6, "timeframe": "5m", "roi_config": {"0": 0.005}},
+    "EMACrossoverScalper": {"stoploss_pct": -0.5, "max_open_trades": 3, "timeframe": "5m", "roi_config": {"0": 0.006}},
 }
 
 

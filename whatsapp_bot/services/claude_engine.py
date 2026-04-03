@@ -93,7 +93,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "switch_strategy",
-            "description": "Switch to a different trading strategy. Available: ConservativeRSI, EMACrossover, BollingerBreakout, ActiveTrader, MeanReversionScalper.",
+            "description": "Switch to a different trading strategy. Available: ConservativeRSI, EMACrossover, BollingerBreakout, ActiveTrader, MeanReversionScalper, EMACrossoverScalper.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -207,6 +207,7 @@ AVAILABLE STRATEGIES:
 3. BollingerBreakout — Medium risk, volatility breakout with BB + Stochastic, -8% stoploss
 4. ActiveTrader — Medium-high risk, fast 1m signals for active trading, -3% stoploss
 5. MeanReversionScalper — Medium risk, scalps oversold bounces with BB + RSI, -0.4% stoploss
+6. EMACrossoverScalper — Medium risk, EMA(9)/EMA(21) crossover scalping with RSI 45-65 filter, -0.5% SL, 0.6% TP, trailing stop at 0.4%
 
 AVAILABLE PAIRS: BTC/USDT, ETH/USDT, SOL/USDT, ADA/USDT
 
@@ -321,6 +322,7 @@ Available strategies:
 3. BollingerBreakout — Medium risk, 5m, volatility breakout, -8% SL, 15-35% monthly
 4. ActiveTrader — Medium-high risk, 1m, frequent signals, -3% SL, high activity
 5. MeanReversionScalper — Medium risk, 5m, oversold scalping, -0.4% SL, tight TP/SL
+6. EMACrossoverScalper — Medium risk, 5m, EMA(9)/EMA(21) crossover with RSI 45-65 filter, -0.5% SL, 0.6% TP, trailing stop, 30-80 trades/month on BTC+ETH
 
 Respond with EXACTLY this structure:
 1. Strategy name and one-line description

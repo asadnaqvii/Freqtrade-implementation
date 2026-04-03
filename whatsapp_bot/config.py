@@ -50,6 +50,7 @@ class Settings:
         "BollingerBreakout",
         "ActiveTrader",
         "MeanReversionScalper",
+        "EMACrossoverScalper",
     )
 
     # --- Default trading pairs ---
