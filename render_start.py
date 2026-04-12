@@ -49,7 +49,7 @@ port = int(os.environ.get("PORT", 10000))
 config = {
     "max_open_trades": 6,
     "stake_currency": "USDT",
-    "stake_amount": 1.0,
+    "stake_amount": 10,
     "tradable_balance_ratio": 0.99,
     "fiat_display_currency": "USD",
     "dry_run": os.environ.get("DRY_RUN", "false").lower() == "true",
