@@ -105,11 +105,20 @@ class ConservativeRSI(IStrategy):
         """
         Exit signal logic:
         - RSI is overbought (> 70)
+        - Or price closes below the 50 EMA (trend break protection)
         - Or stop loss is hit (handled by stoploss parameter)
         """
         dataframe.loc[
             (
                 (dataframe['rsi'] > self.sell_rsi.value)  # Overbought
+            ),
+            'exit_long'] = 1
+
+        # Trend break: exit early instead of riding a downtrend to the stop loss
+        dataframe.loc[
+            (
+                (dataframe['close'] < dataframe['ema_50']) &
+                (dataframe['rsi'] < 50)  # Momentum has actually turned down
             ),
             'exit_long'] = 1
 
