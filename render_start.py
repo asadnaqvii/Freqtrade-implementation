@@ -118,8 +118,11 @@ config = {
     "internals": {
         "process_throttle_secs": 5
     },
-    "strategy": "EMACrossoverScalper",
-    "stoploss": -0.005
+    "strategy": "TrendPullbackStrategy",
+    # Hard backstop matching the strategy's design. The real exit logic is the
+    # strategy's ATR-based custom_stoploss; a config stoploss of -0.005 (0.5%)
+    # would override that and stop every trade out almost instantly.
+    "stoploss": -0.06
 }
 
 # Write config file
@@ -142,7 +145,7 @@ sys.stderr.flush()
 os.execvp("freqtrade", [
     "freqtrade", "trade",
     "--config", "config/config.json",
-    "--strategy", "EMACrossoverScalper",
+    "--strategy", "TrendPullbackStrategy",
     "--strategy-path", "strategies",
     "--userdir", "user_data"
 ])
