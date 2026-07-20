@@ -22,6 +22,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir numpy
 RUN pip install --no-cache-dir TA-Lib
 RUN pip install --no-cache-dir freqtrade
+# scipy is imported by freqtrade's core rpc/metrics module but is not pulled in
+# by a plain `pip install freqtrade` on this version, so install it explicitly.
+RUN pip install --no-cache-dir scipy
 
 # Install FreqUI web dashboard
 RUN freqtrade install-ui

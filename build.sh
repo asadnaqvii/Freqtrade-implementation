@@ -28,6 +28,9 @@ pip install --upgrade pip
 pip install numpy
 TA_LIBRARY_PATH=$HOME/ta-lib/lib TA_INCLUDE_PATH=$HOME/ta-lib/include pip install TA-Lib
 pip install freqtrade
+# scipy is imported by freqtrade's core rpc/metrics module but is not pulled in
+# by a plain `pip install freqtrade` on this version, so install it explicitly.
+pip install scipy
 
 echo "=== Creating user_data directories ==="
 mkdir -p user_data/strategies user_data/data user_data/logs user_data/backtest_results

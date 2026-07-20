@@ -1,2 +1,3 @@
 freqtrade
+scipy
 TA-Lib
