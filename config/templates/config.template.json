@@ -80,7 +80,7 @@
         "process_throttle_secs": 5
     },
 
-    "strategy": "ConservativeRSI",
+    "strategy": "TrendPullbackStrategy",
     "stoploss": -0.05,
 
     "trailing_stop": true,
