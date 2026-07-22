@@ -85,17 +85,46 @@ config = {
         "ccxt_async_config": {
             "aiohttp_trust_env": True
         },
-        "pair_whitelist": [
-            "BTC/USDT",
-            "ETH/USDT",
-            "SOL/USDT",
-            "ADA/USDT"
-        ],
-        "pair_blacklist": []
+        # Dynamic pair selection: the whitelist is populated at runtime by
+        # VolumePairList below, not hardcoded, so the bot is no longer limited
+        # to a fixed handful of tokens.
+        "pair_whitelist": [],
+        "pair_blacklist": [
+            "BNB/.*",
+            ".*UP/USDT",
+            ".*DOWN/USDT",
+            ".*BEAR/USDT",
+            ".*BULL/USDT"
+        ]
     },
     "pairlists": [
         {
-            "method": "StaticPairList"
+            "method": "VolumePairList",
+            "number_assets": 25,
+            "sort_key": "quoteVolume",
+            "min_value": 0,
+            "refresh_period": 3600
+        },
+        {
+            "method": "AgeFilter",
+            "min_days_listed": 60
+        },
+        {
+            "method": "SpreadFilter",
+            "max_spread_ratio": 0.005
+        },
+        {
+            "method": "RangeStabilityFilter",
+            "lookback_days": 10,
+            "min_rate_of_change": 0.03,
+            "refresh_period": 3600
+        },
+        {
+            "method": "VolatilityFilter",
+            "lookback_days": 10,
+            "min_volatility": 0.02,
+            "max_volatility": 0.75,
+            "refresh_period": 3600
         }
     ],
     "edge": {
