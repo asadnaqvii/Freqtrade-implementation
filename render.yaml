@@ -109,11 +109,19 @@ services:
       # plus forceexit and nothing else. Notably not forceenter: entries are the
       # strategy's job.
       #
-      # Set this to the internal address Render shows for freqtrade-bot, NOT
-      # http://freqtrade-bot:8080. Render appends a suffix to the service name
-      # and fronts it on its own internal port, so the real value looks like
-      # http://freqtrade-bot-hn7v:10000. The suffix is assigned when the service
-      # is created, which is why this cannot be written down here.
+      # The bot's internal address, and worth getting right in one go because
+      # both halves of it are surprising:
+      #
+      #   host  Render appends a suffix to the service name, so it is
+      #         freqtrade-bot-hn7v, not freqtrade-bot. The suffix is assigned at
+      #         creation, which is why this cannot be hardcoded here.
+      #   port  The port the service actually listens on -- PORT above, 8080.
+      #         NOT the port in the Render API's serviceDetails.url, which reads
+      #         10000 and refuses connections.
+      #
+      # So: http://freqtrade-bot-hn7v:8080. Getting the host wrong gives
+      # "Name or service not known"; getting the port wrong gives
+      # "Connection refused". The two errors tell you which half to fix.
       - key: FREQTRADE_API_BASE_URL
         sync: false
       - key: API_USERNAME
