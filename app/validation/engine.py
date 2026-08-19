@@ -12,6 +12,7 @@ import logging
 import socket
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from app.providers import registry
@@ -100,6 +101,7 @@ def run_suite(
     stake_currency: str = "USDT",
     stake_amount: float = 10.0,
     max_open_trades: int = 1,
+    credentials_held_by: str | None = None,
 ) -> ValidationOutcome:
     """Execute one named suite against a provider."""
     suite = C.SUITES.get(kind)
@@ -107,13 +109,37 @@ def run_suite(
         raise ValueError(
             f"unknown validation kind {kind!r}; available: {', '.join(sorted(C.SUITES))}"
         )
+    return run_suite_with(
+        suite, kind=kind, provider=provider, pairs=pairs,
+        stake_currency=stake_currency, stake_amount=stake_amount,
+        max_open_trades=max_open_trades, credentials_held_by=credentials_held_by,
+    )
 
+
+def run_suite_with(
+    suite: Sequence[Any],
+    *,
+    kind: str,
+    provider: WalletProvider,
+    pairs: Sequence[str] | None = None,
+    stake_currency: str = "USDT",
+    stake_amount: float = 10.0,
+    max_open_trades: int = 1,
+    credentials_held_by: str | None = None,
+) -> ValidationOutcome:
+    """Execute an explicit list of checks.
+
+    Separate from run_suite because the bot's self-check is not one of the named
+    suites: it runs only what needs a key plus the context to interpret it, and
+    naming it in SUITES would offer it to callers that cannot run it.
+    """
     ctx = C.CheckContext(
         provider=provider,
         pairs=list(pairs or []),
         stake_currency=stake_currency,
         stake_amount=stake_amount,
         max_open_trades=max_open_trades,
+        credentials_held_by=credentials_held_by,
     )
 
     started = time.perf_counter()
@@ -291,6 +317,169 @@ def persist(
     return run_id
 
 
+def bot_for_account(client, account: dict[str, Any]) -> dict[str, Any] | None:
+    """The bot that holds this account's keys, if there is one.
+
+    Used so a service with no credentials of its own can still verify an
+    account: the checks that need a key get asked of the bot instead.
+
+    The lookup runs on the caller's own client, so RLS decides which bots are
+    visible and one user's account can never be answered by another user's bot.
+    Beyond that, `account_id` is the real link; matching on the exchange is a
+    fallback for a bot registered before that column was populated, and it is
+    only trusted when it is unambiguous.
+    """
+    if client is None or not account.get("id"):
+        return None
+
+    try:
+        linked = client.select(
+            "bot_instances",
+            columns="id,name,exchange,api_base_url,trading_mode,status,account_id",
+            filters={"account_id": f"eq.{account['id']}"},
+            limit=2,
+        )
+        if len(linked) == 1:
+            return linked[0]
+        if len(linked) > 1:
+            log.info("account %s has %d bots linked; not delegating",
+                     account.get("label"), len(linked))
+            return None
+
+        provider = (account.get("provider") or "").lower()
+        if not provider:
+            return None
+        candidates = [
+            bot for bot in client.select(
+                "bot_instances",
+                columns="id,name,exchange,api_base_url,trading_mode,status,account_id",
+                filters={"exchange": f"eq.{provider}"},
+                limit=5,
+            )
+            if bot.get("api_base_url") and not bot.get("account_id")
+        ]
+        if len(candidates) == 1:
+            log.info("delegating %s to unlinked bot %s matched on exchange",
+                     account.get("label"), candidates[0].get("name"))
+            return candidates[0]
+    except Exception as exc:  # noqa: BLE001 - a failed lookup must not fail the run
+        log.info("could not resolve a bot for account %s: %s", account.get("label"), exc)
+    return None
+
+
+#: Checks that cannot run without a key, and so are answered by the bot.
+DELEGATED_CODES = ("provider.credentials", "provider.permissions", "balance.sufficient")
+
+#: How old a bot-measured result may be before it is shown as stale rather than
+#: current. The bot re-checks every few minutes, so anything past this means it
+#: stopped checking, and a stale pass is exactly the kind of reassurance that
+#: should not be given silently.
+BOT_FINDING_MAX_AGE_SECONDS = 30 * 60
+
+
+def _age_seconds(timestamp: str | None) -> float | None:
+    if not timestamp:
+        return None
+    try:
+        when = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds()
+
+
+def _describe_age(seconds: float | None) -> str:
+    if seconds is None:
+        return "at an unknown time"
+    if seconds < 90:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    return f"{int(seconds // 3600)}h ago"
+
+
+def merge_bot_findings(client, outcome: ValidationOutcome, *, account, bot) -> None:
+    """Replace the locally-unanswerable checks with what the bot measured.
+
+    Every merged result says which bot measured it and how long ago, because a
+    credential check that silently reports a half-hour-old observation as
+    current is worse than one that admits it could not look.
+    """
+    findings = latest_bot_findings(client, account_id=account.get("id"), bot_id=bot.get("id"))
+    if not findings:
+        return
+
+    age = _age_seconds(findings.get("created_at"))
+    stale = age is not None and age > BOT_FINDING_MAX_AGE_SECONDS
+    when = _describe_age(age)
+    by_code = {row.get("code"): row for row in findings.get("checks") or []}
+
+    for index, result in enumerate(outcome.results):
+        row = by_code.get(result.code)
+        if result.code not in DELEGATED_CODES or not row:
+            continue
+
+        status = row.get("status") or C.SKIPPED
+        message = (row.get("message") or "").rstrip()
+        if stale:
+            # Do not carry a pass forward past its shelf life.
+            status = C.SKIPPED if status == C.PASSED else status
+            suffix = f"Measured by {bot.get('name')} {when} -- too old to rely on."
+        else:
+            suffix = f"Measured by {bot.get('name')} {when}."
+
+        outcome.results[index] = C.CheckResult(
+            code=result.code,
+            title=result.title,
+            status=status,
+            severity=row.get("severity") or result.severity,
+            message=f"{message} {suffix}".strip(),
+            expected=row.get("expected"),
+            actual=row.get("actual"),
+            remediation=row.get("remediation"),
+            pair=row.get("pair"),
+            duration_ms=row.get("duration_ms"),
+        )
+
+    outcome.status, outcome.summary = _verdict(outcome.results)
+    outcome.context["credentials_measured_by"] = {
+        "bot": bot.get("name"),
+        "run_id": findings.get("run_id"),
+        "age_seconds": int(age) if age is not None else None,
+        "stale": stale,
+    }
+
+
+def latest_bot_findings(client, *, account_id, bot_id) -> dict[str, Any] | None:
+    """The most recent verification this bot ran on its own credentials."""
+    if client is None or not account_id:
+        return None
+    try:
+        runs = client.select(
+            "validation_runs",
+            columns="id,created_at,status",
+            filters={
+                "account_id": f"eq.{account_id}",
+                "bot_instance_id": f"eq.{bot_id}" if bot_id else "not.is.null",
+            },
+            order="created_at.desc",
+            limit=1,
+        )
+        if not runs:
+            return None
+        checks = client.select(
+            "validation_checks",
+            columns="code,status,severity,message,expected,actual,remediation,pair,duration_ms",
+            filters={"run_id": f"eq.{runs[0]['id']}"},
+        )
+        return {"run_id": runs[0]["id"], "created_at": runs[0].get("created_at"),
+                "checks": checks}
+    except Exception as exc:  # noqa: BLE001 - a missing overlay must not fail the run
+        log.info("could not read bot findings for account %s: %s", account_id, exc)
+    return None
+
+
 def verify_account(
     client,
     account: dict[str, Any],
@@ -302,16 +491,30 @@ def verify_account(
     max_open_trades: int = 1,
     persist_result: bool = True,
 ) -> ValidationOutcome:
-    """End-to-end: build the provider, run the suite, record the outcome."""
+    """End-to-end: build the provider, run the suite, record the outcome.
+
+    On the public service the credential-dependent checks cannot run locally --
+    there is no key here, by design. They are answered by the bot that holds the
+    key, which verifies itself and writes the result to the database; this merges
+    that result in rather than reporting a missing key as a bad one.
+    """
     provider = registry.build(account)
+    bot = None
+    if not provider.credentials.present:
+        bot = bot_for_account(client, account)
+
     try:
         outcome = run_suite(
             kind, provider,
             pairs=pairs, stake_currency=stake_currency,
             stake_amount=stake_amount, max_open_trades=max_open_trades,
+            credentials_held_by=(bot or {}).get("name"),
         )
     finally:
         provider.close()
+
+    if bot:
+        merge_bot_findings(client, outcome, account=account, bot=bot)
 
     if persist_result and client is not None:
         persist(

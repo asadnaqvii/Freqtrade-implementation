@@ -241,6 +241,91 @@ else:
     print("persistence: SQLite (ephemeral -- set SUPABASE_DB_URL to keep history)", flush=True)
 
 
+#: How often the bot re-verifies its own credentials. Frequent enough that the
+#: app's view is never far behind, rare enough to be invisible to rate limits.
+SELFCHECK_INTERVAL_SECONDS = int(_env("SELFCHECK_INTERVAL_SECONDS", "900") or 900)
+
+
+def _sole_profile_id(client):
+    """The owner, when there is exactly one and PLATFORM_OWNER_ID was not set.
+
+    Registering with a null owner is worse than not registering: RLS then hides
+    the bot from the very dashboard meant to show it. Guessing is only safe when
+    there is nothing to guess between, so more than one profile means give up
+    and say so rather than pick.
+    """
+    try:
+        profiles = client.select("profiles", columns="id", limit=2)
+    except Exception as exc:
+        print(f"could not resolve an owner: {exc}", flush=True)
+        return None
+    if len(profiles) == 1:
+        print(f"PLATFORM_OWNER_ID unset; using the only profile {profiles[0]['id']}",
+              flush=True)
+        return profiles[0]["id"]
+    print(f"PLATFORM_OWNER_ID unset and {len(profiles)} profiles exist; "
+          "set it or this bot stays invisible to the dashboard", flush=True)
+    return None
+
+
+def _link_account(client, bot_id, owner_id):
+    """Point this bot at the exchange_accounts row whose keys it is running with.
+
+    The link is what lets the public app verify that account without holding a
+    key: it asks this bot instead. Matching is on the venue and only when
+    unambiguous -- a wrong link would have the app report one account's health
+    for another.
+    """
+    try:
+        accounts = client.select(
+            "exchange_accounts",
+            columns="id,label",
+            filters={"owner_id": f"eq.{owner_id}", "provider": f"eq.{exchange_name}",
+                     "is_active": "eq.true"},
+            limit=3,
+        )
+        if len(accounts) != 1:
+            print(f"not linking an account: {len(accounts)} active {exchange_name} "
+                  "accounts for this owner", flush=True)
+            return
+        client.update("bot_instances", {"account_id": accounts[0]["id"]},
+                      filters={"id": f"eq.{bot_id}"})
+        print(f"linked to exchange account {accounts[0]['label']}", flush=True)
+        return accounts[0]
+    except Exception as exc:
+        print(f"could not link an exchange account: {exc}", flush=True)
+    return None
+
+
+def _selfcheck_loop(client, account, bot_id, owner_id):
+    """Verify our own credentials here, where the keys are, and publish it.
+
+    The public app cannot do this: it holds no keys, on purpose. Rather than
+    hand it a key or a way to drive this bot, the answer is measured here and
+    read back out of the database.
+    """
+    from app.validation import selfcheck
+
+    while True:
+        try:
+            outcome = selfcheck.run(
+                client,
+                account=account,
+                bot_instance_id=bot_id,
+                owner_id=owner_id,
+                stake_currency=config["stake_currency"],
+                stake_amount=config["stake_amount"],
+                max_open_trades=config["max_open_trades"],
+            )
+            if outcome:
+                print(f"self-check: {outcome.status} -- {outcome.summary}", flush=True)
+        except Exception as exc:
+            # Never let this stop the bot trading; a missing result reads as
+            # "not measured", which is true.
+            print(f"self-check failed: {exc}", flush=True)
+        time.sleep(SELFCHECK_INTERVAL_SECONDS)
+
+
 def register_and_heartbeat():
     """Register this bot and keep its heartbeat fresh.
 
@@ -259,7 +344,7 @@ def register_and_heartbeat():
         print(f"bot registration skipped: {exc}", flush=True)
         return
 
-    owner_id = _env("PLATFORM_OWNER_ID")
+    owner_id = _env("PLATFORM_OWNER_ID") or _sole_profile_id(client)
     now = datetime.now(timezone.utc).isoformat()
     row = {
         "name": bot_name,
@@ -273,7 +358,9 @@ def register_and_heartbeat():
         "deploy_target": _env("DEPLOY_TARGET", "render"),
         "environment": _env("ENVIRONMENT", "production"),
         "db_schema": db_schema,
-        "api_base_url": _env("FREQTRADE_API_BASE_URL"),
+        # Render routes a private service at http://<name>:<port> inside the
+        # region. Without this the app has no address to delegate to.
+        "api_base_url": _env("FREQTRADE_API_BASE_URL") or f"http://{bot_name}:{port}",
         "status": "running",
         "started_at": now,
         "last_heartbeat_at": now,
@@ -292,6 +379,13 @@ def register_and_heartbeat():
         print(f"registered bot instance {bot_id}", flush=True)
     except Exception as exc:
         print(f"could not register this bot: {exc}", flush=True)
+
+    account = _link_account(client, bot_id, owner_id) if bot_id and owner_id else None
+    if account:
+        threading.Thread(
+            target=_selfcheck_loop, args=(client, account, bot_id, owner_id),
+            daemon=True, name="selfcheck",
+        ).start()
 
     # Build the live views once freqtrade has created its tables. On a first
     # boot they do not exist yet, so retry for a while rather than giving up.

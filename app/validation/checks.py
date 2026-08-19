@@ -10,6 +10,7 @@ nothing else just moves the debugging to the user.
 
 from __future__ import annotations
 
+import functools
 import logging
 import time
 from dataclasses import dataclass, field
@@ -78,11 +79,17 @@ class CheckContext:
     stake_amount: float = 10.0
     max_open_trades: int = 1
     connectivity: ConnectivityReport | None = None
+    #: Name of the bot holding this account's keys, when this process does not.
+    #: The public service deliberately has no exchange credentials, so a check
+    #: that needs one here reports "measured elsewhere" rather than "your keys
+    #: are bad" -- and the real result is merged in from that bot's own run.
+    credentials_held_by: str | None = None
 
 
 def timed(fn: Callable[..., CheckResult]) -> Callable[..., CheckResult]:
     """Record how long a check took; useful for spotting a slow venue."""
 
+    @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> CheckResult:
         started = time.perf_counter()
         try:
@@ -240,6 +247,24 @@ def check_credentials(ctx: CheckContext) -> CheckResult:
             message="Simulated provider; there are no credentials to verify.",
         )
 
+    if not ctx.provider.credentials.present and ctx.credentials_held_by:
+        # Not a failure. This service is not supposed to hold the key; the bot
+        # that does checks it against the venue and the result is merged in.
+        return CheckResult(
+            code="provider.credentials",
+            title="API credentials",
+            status=SKIPPED,
+            severity=INFO,
+            message=(
+                f"Checked by {ctx.credentials_held_by}, which holds the keys. "
+                "No result from it yet."
+            ),
+            remediation=(
+                f"{ctx.credentials_held_by} verifies its own credentials on start and "
+                "every few minutes. If this stays empty, check that bot's logs."
+            ),
+        )
+
     if not ctx.provider.credentials.present:
         return CheckResult(
             code="provider.credentials",
@@ -249,7 +274,9 @@ def check_credentials(ctx: CheckContext) -> CheckResult:
             message="No API key and secret were resolved for this account.",
             remediation=(
                 "exchange_accounts stores the NAME of the environment variable holding "
-                "each secret. Confirm those variables are set on this service."
+                "each secret. Either set those variables on this service, or link this "
+                "account to a bot instance that holds them -- the app will then ask the "
+                "bot over the private network instead of holding a key itself."
             ),
         )
 
@@ -296,6 +323,13 @@ def check_permissions(ctx: CheckContext) -> CheckResult:
     Withdrawal rights on a bot key are the difference between a compromise that
     costs you a strategy and one that costs you the balance.
     """
+    if not ctx.provider.credentials.present and ctx.credentials_held_by:
+        return CheckResult(
+            code="provider.permissions", title="Key permissions", status=SKIPPED,
+            severity=INFO,
+            message=f"Checked by {ctx.credentials_held_by}, which holds the keys.",
+        )
+
     try:
         permissions = {p.lower() for p in ctx.provider.permissions()}
     except ProviderGeoBlockError:

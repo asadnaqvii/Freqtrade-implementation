@@ -42,8 +42,10 @@ services:
       # through the Supabase API.
       - key: FREQTRADE_DB_SCHEMA
         value: ft_main
+      # Dry-run by default. Going live is a deliberate act: flip this in the
+      # dashboard once nothing else is trading the same exchange account.
       - key: DRY_RUN
-        value: "false"
+        value: "true"
       # Exchange credentials. Set these in the dashboard, not here.
       - key: FREQTRADE__EXCHANGE__KEY
         sync: false
@@ -90,6 +92,10 @@ services:
       - key: SUPABASE_JWT_SECRET
         sync: false
       # The bot is unreachable from the internet; this is its private address.
+      # Note what is deliberately absent: this service gets no exchange keys and
+      # no freqtrade API login. Wallet checks that need a key are run by the bot
+      # itself and read back out of the database, so a compromise of this public
+      # service cannot place an order.
       - key: FREQTRADE_API_BASE_URL
         value: http://freqtrade-bot:8080
       # Same-origin only unless you add a separate frontend host.
