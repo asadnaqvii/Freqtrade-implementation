@@ -1,45 +1,49 @@
+# Container image for any of the three services. Which one you get depends on
+# the command, not the image.
+#
+#   bot     python render_start.py
+#   app     uvicorn app.api.main:app --host 0.0.0.0 --port 8080
+#   worker  python -m app.worker.main
+#
+# The TA-Lib C library build that used to be here is gone: TA-Lib publishes
+# prebuilt wheels now, so the image no longer needs a compiler and builds in a
+# fraction of the time.
+
 FROM python:3.11-slim
 
-# Install TA-Lib C library dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install TA-Lib C library
-RUN cd /tmp && \
-    curl -L -o ta-lib-0.4.0-src.tar.gz https://github.com/TA-Lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-src.tar.gz && \
-    tar -xzf ta-lib-0.4.0-src.tar.gz && \
-    cd ta-lib/ && \
-    ./configure --prefix=/usr && \
-    make && \
-    make install && \
-    cd / && rm -rf /tmp/ta-lib /tmp/ta-lib-0.4.0-src.tar.gz
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir numpy
-RUN pip install --no-cache-dir TA-Lib
-RUN pip install --no-cache-dir freqtrade
-# scipy is imported by freqtrade's core rpc/metrics module but is not pulled in
-# by a plain `pip install freqtrade` on this version, so install it explicitly.
-RUN pip install --no-cache-dir scipy
+# curl is used by the container healthcheck; nothing else needs a toolchain.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install FreqUI web dashboard
+COPY requirements-render.txt ./
+RUN pip install --upgrade pip && pip install -r requirements-render.txt
+
+# FreqUI, for anyone reaching the bot over the private network.
 RUN freqtrade install-ui
 
-# Copy project files
+COPY app/ ./app/
 COPY strategies/ ./strategies/
 COPY config/ ./config/
-COPY render_start.py ./start.py
+COPY db/ ./db/
+COPY scripts/ ./scripts/
+COPY render_start.py ./
 
-# Create user_data directories
-RUN mkdir -p user_data/strategies user_data/data user_data/logs user_data/backtest_results
+RUN mkdir -p user_data/strategies user_data/data user_data/logs user_data/backtest_results \
+    && cp strategies/*.py user_data/strategies/ 2>/dev/null || true
 
-# Copy strategies to user_data as well
-RUN cp strategies/*.py user_data/strategies/
+# Run as a non-root user: this process holds exchange API keys.
+RUN useradd --create-home --uid 10001 freqtrade \
+    && chown -R freqtrade:freqtrade /app
+USER freqtrade
 
 ENV PORT=8080
+EXPOSE 8080
 
-CMD ["python", "start.py"]
+CMD ["python", "render_start.py"]

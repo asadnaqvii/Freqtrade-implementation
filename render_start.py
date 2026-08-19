@@ -1,180 +1,269 @@
 #!/usr/bin/env python3
+"""Entry point for the freqtrade trading bot.
+
+Two changes from a bare `freqtrade trade`:
+
+  1. Persistence goes to Supabase Postgres instead of a SQLite file inside the
+     container. On Render and Railway that filesystem is ephemeral, so every
+     redeploy previously wiped the trade history the dashboard was showing.
+     Falls back to SQLite when no database is configured, so local runs and the
+     existing deployment keep working untouched.
+
+  2. The bot registers itself in public.bot_instances and heartbeats. Since it
+     runs as a private service with no public ingress, that row is how anything
+     else knows it is alive.
+"""
+
+import json
 import os
 import sys
-import json
+import threading
+import time
+from datetime import datetime, timezone
 
-print("=== Render Start Script ===")
-print(f"Python: {sys.version}")
-print(f"HOME: {os.path.expanduser('~')}")
-print(f"PWD: {os.getcwd()}")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Set TA-Lib library path for runtime - check multiple possible locations
-ta_lib_candidates = [
+print("=== freqtrade bot starting ===", flush=True)
+print(f"Python: {sys.version.split()[0]}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# TA-Lib
+# ---------------------------------------------------------------------------
+# TA-Lib now ships prebuilt wheels, so the hand-rolled C build the old build.sh
+# performed is no longer needed. Keep looking for a locally compiled copy anyway
+# in case an older image is still around.
+_ta_lib_candidates = [
     os.path.join(os.path.expanduser("~"), "ta-lib", "lib"),
     "/opt/render/project/ta-lib/lib",
-    "/opt/render/.local/ta-lib/lib",
 ]
-current_ld = os.environ.get("LD_LIBRARY_PATH", "")
-for ta_lib_path in ta_lib_candidates:
-    if os.path.exists(ta_lib_path) and ta_lib_path not in current_ld:
-        current_ld = f"{ta_lib_path}:{current_ld}" if current_ld else ta_lib_path
-        print(f"Found TA-Lib at: {ta_lib_path}")
-os.environ["LD_LIBRARY_PATH"] = current_ld
-print(f"LD_LIBRARY_PATH: {current_ld}")
+_ld = os.environ.get("LD_LIBRARY_PATH", "")
+for _path in _ta_lib_candidates:
+    if os.path.exists(_path) and _path not in _ld:
+        _ld = f"{_path}:{_ld}" if _ld else _path
+if _ld:
+    os.environ["LD_LIBRARY_PATH"] = _ld
 
-# Verify TA-Lib can be loaded
 try:
     import talib
-    print(f"TA-Lib Python module loaded successfully (version: {talib.__version__})")
-except ImportError as e:
-    print(f"WARNING: TA-Lib import failed: {e}")
-    print("Attempting to find libta_lib.so...")
-    for path in ta_lib_candidates:
-        so_file = os.path.join(path, "libta_lib.so.0")
-        if os.path.exists(so_file):
-            print(f"  Found: {so_file}")
-        else:
-            print(f"  Not found: {so_file}")
+    print(f"TA-Lib {talib.__version__} loaded", flush=True)
+except ImportError as exc:
+    print(f"WARNING: TA-Lib not importable: {exc}", flush=True)
 
-# Validate required environment variables
-required_vars = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
-missing = [v for v in required_vars if not os.environ.get(v)]
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+def _env(name, default=None):
+    value = os.environ.get(name, default)
+    return value.strip() if isinstance(value, str) else value
+
+
+REQUIRED = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
+missing = [v for v in REQUIRED if not _env(v)]
 if missing:
-    print(f"WARNING: Missing environment variables: {', '.join(missing)}")
-    print("Bot will start but cannot connect to exchange for live trading.")
+    print(f"WARNING: missing {', '.join(missing)} -- cannot trade live", flush=True)
 
-port = int(os.environ.get("PORT", 10000))
+port = int(_env("PORT", "8080") or 8080)
+strategy = _env("FREQTRADE_STRATEGY", "TrendPullbackStrategy")
+exchange_name = _env("FREQTRADE__EXCHANGE__NAME", "kucoin")
+db_schema = _env("FREQTRADE_DB_SCHEMA", "ft_main")
+bot_name = _env("BOT_NAME", "freqtrade-bot")
+dry_run = (_env("DRY_RUN", "false") or "false").lower() == "true"
 
-# Create config from environment variables
 config = {
-    "max_open_trades": 6,
-    "stake_currency": "USDT",
-    "stake_amount": 10,
+    "max_open_trades": int(_env("FREQTRADE_MAX_OPEN_TRADES", "6") or 6),
+    "stake_currency": _env("FREQTRADE_STAKE_CURRENCY", "USDT"),
+    "stake_amount": float(_env("FREQTRADE_STAKE_AMOUNT", "10") or 10),
     "tradable_balance_ratio": 0.99,
     "fiat_display_currency": "USD",
-    "dry_run": os.environ.get("DRY_RUN", "false").lower() == "true",
+    "dry_run": dry_run,
     "dry_run_wallet": 1000,
     "cancel_open_orders_on_exit": False,
-    "unfilledtimeout": {
-        "entry": 10,
-        "exit": 10,
-        "exit_timeout_count": 0,
-        "unit": "minutes"
-    },
+    "unfilledtimeout": {"entry": 10, "exit": 10, "exit_timeout_count": 0, "unit": "minutes"},
     "entry_pricing": {
         "price_side": "same",
         "use_order_book": True,
         "order_book_top": 1,
         "price_last_balance": 0.0,
-        "check_depth_of_market": {
-            "enabled": False,
-            "bids_to_ask_delta": 1
-        }
+        "check_depth_of_market": {"enabled": False, "bids_to_ask_delta": 1},
     },
-    "exit_pricing": {
-        "price_side": "same",
-        "use_order_book": True,
-        "order_book_top": 1
-    },
+    "exit_pricing": {"price_side": "same", "use_order_book": True, "order_book_top": 1},
     "exchange": {
-        "name": "kucoin",
-        "key": os.environ.get("FREQTRADE__EXCHANGE__KEY", ""),
-        "secret": os.environ.get("FREQTRADE__EXCHANGE__SECRET", ""),
-        "password": os.environ.get("FREQTRADE__EXCHANGE__PASSWORD", ""),
+        "name": exchange_name,
+        "key": _env("FREQTRADE__EXCHANGE__KEY", ""),
+        "secret": _env("FREQTRADE__EXCHANGE__SECRET", ""),
+        "password": _env("FREQTRADE__EXCHANGE__PASSWORD", ""),
         "ccxt_config": {},
-        "ccxt_async_config": {
-            "aiohttp_trust_env": True
-        },
-        # Dynamic pair selection: the whitelist is populated at runtime by
-        # VolumePairList below, not hardcoded, so the bot is no longer limited
-        # to a fixed handful of tokens.
+        "ccxt_async_config": {"aiohttp_trust_env": True},
+        # Populated at runtime by VolumePairList, not hardcoded.
         "pair_whitelist": [],
-        "pair_blacklist": [
-            "BNB/.*",
-            ".*UP/USDT",
-            ".*DOWN/USDT",
-            ".*BEAR/USDT",
-            ".*BULL/USDT"
-        ]
+        "pair_blacklist": ["BNB/.*", ".*UP/USDT", ".*DOWN/USDT", ".*BEAR/USDT", ".*BULL/USDT"],
     },
     "pairlists": [
-        {
-            "method": "VolumePairList",
-            "number_assets": 25,
-            "sort_key": "quoteVolume",
-            "min_value": 0,
-            "refresh_period": 3600
-        },
-        {
-            "method": "AgeFilter",
-            "min_days_listed": 60
-        },
-        {
-            "method": "SpreadFilter",
-            "max_spread_ratio": 0.005
-        },
-        {
-            "method": "RangeStabilityFilter",
-            "lookback_days": 10,
-            "min_rate_of_change": 0.03,
-            "refresh_period": 3600
-        },
-        {
-            "method": "VolatilityFilter",
-            "lookback_days": 10,
-            "min_volatility": 0.02,
-            "max_volatility": 0.75,
-            "refresh_period": 3600
-        }
+        {"method": "VolumePairList", "number_assets": 25, "sort_key": "quoteVolume",
+         "min_value": 0, "refresh_period": 3600},
+        {"method": "AgeFilter", "min_days_listed": 60},
+        {"method": "SpreadFilter", "max_spread_ratio": 0.005},
+        {"method": "RangeStabilityFilter", "lookback_days": 10, "min_rate_of_change": 0.03,
+         "refresh_period": 3600},
+        {"method": "VolatilityFilter", "lookback_days": 10, "min_volatility": 0.02,
+         "max_volatility": 0.75, "refresh_period": 3600},
     ],
-    "edge": {
-        "enabled": False
-    },
+    "edge": {"enabled": False},
     "api_server": {
         "enabled": True,
         "listen_ip_address": "0.0.0.0",
         "listen_port": port,
         "verbosity": "error",
         "enable_openapi": True,
-        "jwt_secret_key": os.environ.get("JWT_SECRET_KEY", "supersecretkey"),
-        "CORS_origins": ["*"],
-        "username": os.environ.get("API_USERNAME", "freqtrader"),
-        "password": os.environ.get("API_PASSWORD", "freqtrader")
+        "jwt_secret_key": _env("JWT_SECRET_KEY", "supersecretkey"),
+        # This service has no public ingress, so the API is only reachable from
+        # inside Render's private network. CORS is not the boundary here.
+        "CORS_origins": [],
+        "username": _env("API_USERNAME", "freqtrader"),
+        "password": _env("API_PASSWORD", "freqtrader"),
     },
-    "bot_name": "freqtrade",
+    "bot_name": bot_name,
     "initial_state": "running",
     "force_entry_enable": True,
-    "internals": {
-        "process_throttle_secs": 5
-    },
-    "strategy": "TrendPullbackStrategy",
+    "internals": {"process_throttle_secs": 5},
+    "strategy": strategy,
     # Hard backstop matching the strategy's design. The real exit logic is the
-    # strategy's ATR-based custom_stoploss; a config stoploss of -0.005 (0.5%)
-    # would override that and stop every trade out almost instantly.
-    "stoploss": -0.06
+    # strategy's ATR-based custom_stoploss; a tighter config stoploss would
+    # override it and stop every trade out almost immediately.
+    "stoploss": float(_env("FREQTRADE_STOPLOSS", "-0.06") or -0.06),
 }
 
-# Write config file
 os.makedirs("config", exist_ok=True)
-with open("config/config.json", "w") as f:
-    json.dump(config, f, indent=2)
+with open("config/config.json", "w") as handle:
+    json.dump(config, handle, indent=2)
 
-print(f"Config created: dry_run={config['dry_run']}, port={port}")
-print(f"Exchange key configured: {'Yes' if config['exchange']['key'] else 'No'}")
+print(f"strategy={strategy} exchange={exchange_name} dry_run={dry_run} port={port}", flush=True)
+print(f"exchange key configured: {'yes' if config['exchange']['key'] else 'no'}", flush=True)
 
-# Copy strategies to user_data
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+db_url = None
+try:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    db_url = settings.freqtrade_db_url
+except Exception as exc:
+    print(f"WARNING: could not read platform settings ({exc}); using SQLite", flush=True)
+
+if db_url:
+    # Never print the URL; it carries the database password.
+    print(f"persistence: postgres, schema {db_schema}", flush=True)
+else:
+    print("persistence: SQLite (ephemeral -- set SUPABASE_DB_URL to keep history)", flush=True)
+
+
+def register_and_heartbeat():
+    """Register this bot and keep its heartbeat fresh.
+
+    Best effort throughout: the bot must trade even when the control plane is
+    unreachable. Every failure here is logged and swallowed.
+    """
+    try:
+        from app.core.supabase import SupabaseClient
+    except Exception as exc:
+        print(f"bot registration unavailable: {exc}", flush=True)
+        return
+
+    try:
+        client = SupabaseClient.service()
+    except Exception as exc:
+        print(f"bot registration skipped: {exc}", flush=True)
+        return
+
+    owner_id = _env("PLATFORM_OWNER_ID")
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "name": bot_name,
+        "owner_id": owner_id,
+        "exchange": exchange_name,
+        "strategy": strategy,
+        "trading_mode": "dry_run" if dry_run else "live",
+        "stake_currency": config["stake_currency"],
+        "stake_amount": config["stake_amount"],
+        "max_open_trades": config["max_open_trades"],
+        "deploy_target": _env("DEPLOY_TARGET", "render"),
+        "environment": _env("ENVIRONMENT", "production"),
+        "db_schema": db_schema,
+        "api_base_url": _env("FREQTRADE_API_BASE_URL"),
+        "status": "running",
+        "started_at": now,
+        "last_heartbeat_at": now,
+    }
+
+    bot_id = None
+    try:
+        existing = client.select_one(
+            "bot_instances", columns="id", filters={"name": f"eq.{bot_name}"}
+        )
+        if existing:
+            bot_id = existing["id"]
+            client.update("bot_instances", row, filters={"id": f"eq.{bot_id}"})
+        else:
+            bot_id = client.insert("bot_instances", row)[0]["id"]
+        print(f"registered bot instance {bot_id}", flush=True)
+    except Exception as exc:
+        print(f"could not register this bot: {exc}", flush=True)
+
+    # Build the live views once freqtrade has created its tables. On a first
+    # boot they do not exist yet, so retry for a while rather than giving up.
+    def build_views():
+        for attempt in range(30):
+            time.sleep(20)
+            try:
+                result = client.rpc("refresh_freqtrade_views", {"p_schema": db_schema})
+                if result and "created" in str(result):
+                    print(f"live views ready: {result}", flush=True)
+                    return
+            except Exception as exc:
+                if attempt == 0:
+                    print(f"live views not ready yet: {exc}", flush=True)
+
+    threading.Thread(target=build_views, daemon=True, name="views").start()
+
+    def beat():
+        while True:
+            time.sleep(60)
+            if not bot_id:
+                return
+            try:
+                client.update(
+                    "bot_instances",
+                    {"last_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                     "status": "running"},
+                    filters={"id": f"eq.{bot_id}"},
+                )
+            except Exception:
+                pass  # a missed heartbeat shows up as 'stale', which is accurate
+
+    threading.Thread(target=beat, daemon=True, name="heartbeat").start()
+
+
+register_and_heartbeat()
+
 os.makedirs("user_data/strategies", exist_ok=True)
 os.system("cp strategies/*.py user_data/strategies/ 2>/dev/null || true")
 
-# Start freqtrade with stdout/stderr unbuffered
-print(f"Starting freqtrade on port {port}...", flush=True)
-sys.stdout.flush()
-sys.stderr.flush()
-
-os.execvp("freqtrade", [
+argv = [
     "freqtrade", "trade",
     "--config", "config/config.json",
-    "--strategy", "TrendPullbackStrategy",
+    "--strategy", strategy,
     "--strategy-path", "strategies",
-    "--userdir", "user_data"
-])
+    "--userdir", "user_data",
+]
+if db_url:
+    argv += ["--db-url", db_url]
+
+print(f"starting freqtrade on port {port}", flush=True)
+sys.stdout.flush()
+sys.stderr.flush()
+os.execvp("freqtrade", argv)

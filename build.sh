@@ -1,38 +1,40 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "=== Build environment ==="
-echo "HOME=$HOME"
-echo "PWD=$PWD"
+# One build for all three services. They share a dependency set; which one you
+# get is decided by the start command, not the build.
+#
+# The hand-rolled TA-Lib C compilation that used to live here is gone: TA-Lib
+# publishes prebuilt wheels now, so `pip install TA-Lib` just works and the
+# build no longer spends several minutes running ./configure && make.
 
-echo "=== Installing TA-Lib C library ==="
-cd /tmp
-curl -L -o ta-lib-0.4.0-src.tar.gz https://github.com/TA-Lib/ta-lib/releases/download/v0.4.0/ta-lib-0.4.0-src.tar.gz
-tar -xzf ta-lib-0.4.0-src.tar.gz
-cd ta-lib/
-./configure --prefix=$HOME/ta-lib
-make
-make install
-echo "TA-Lib installed to $HOME/ta-lib"
-ls -la $HOME/ta-lib/lib/
-
-cd /opt/render/project/src
-rm -rf /tmp/ta-lib /tmp/ta-lib-0.4.0-src.tar.gz
-
-echo "=== Installing Python dependencies ==="
-export LD_LIBRARY_PATH=$HOME/ta-lib/lib:$LD_LIBRARY_PATH
-export TA_LIBRARY_PATH=$HOME/ta-lib/lib
-export TA_INCLUDE_PATH=$HOME/ta-lib/include
+echo "=== build ==="
+python --version
 
 pip install --upgrade pip
-pip install numpy
-TA_LIBRARY_PATH=$HOME/ta-lib/lib TA_INCLUDE_PATH=$HOME/ta-lib/include pip install TA-Lib
-pip install freqtrade
-# scipy is imported by freqtrade's core rpc/metrics module but is not pulled in
-# by a plain `pip install freqtrade` on this version, so install it explicitly.
-pip install scipy
+pip install --no-cache-dir -r requirements-render.txt
 
-echo "=== Creating user_data directories ==="
+echo "=== verifying imports ==="
+python - <<'PY'
+import importlib, sys
+
+required = ["freqtrade", "talib", "ccxt", "fastapi", "uvicorn", "httpx", "jwt", "pydantic",
+            "pandas", "numpy", "scipy", "psycopg2"]
+missing = []
+for name in required:
+    try:
+        module = importlib.import_module(name)
+        print(f"  ok   {name} {getattr(module, '__version__', '')}")
+    except Exception as exc:
+        missing.append(f"{name}: {exc}")
+        print(f"  FAIL {name}: {exc}")
+
+if missing:
+    # Fail the build rather than discovering this at 3am when the bot restarts.
+    sys.exit("missing dependencies: " + "; ".join(missing))
+PY
+
 mkdir -p user_data/strategies user_data/data user_data/logs user_data/backtest_results
+cp strategies/*.py user_data/strategies/ 2>/dev/null || true
 
-echo "=== Build complete ==="
+echo "=== build complete ==="

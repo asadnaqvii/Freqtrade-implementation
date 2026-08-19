@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Freqtrade Platform</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --panel-2:#1c232c; --line:#2a323d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#3fb950; --accent-dim:#238636;
+    --warn:#d29922; --bad:#f85149; --info:#58a6ff; --radius:10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fa; --panel:#fff; --panel-2:#f0f3f6; --line:#d0d7de;
+            --text:#1f2328; --muted:#636c76; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
+           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:10; }
+  header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.2px; }
+  header .spacer { flex:1; }
+  nav { display:flex; gap:4px; padding:0 22px; border-bottom:1px solid var(--line); background:var(--panel); }
+  nav button { background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
+               padding:11px 14px; cursor:pointer; font-size:13px; font-weight:500; }
+  nav button.active { color:var(--text); border-bottom-color:var(--accent); }
+  main { padding:22px; max-width:1180px; margin:0 auto; }
+  section { display:none; } section.active { display:block; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+          padding:18px; margin-bottom:16px; }
+  .card h2 { margin:0 0 4px; font-size:14px; font-weight:600; }
+  .card p.hint { margin:0 0 14px; color:var(--muted); font-size:12.5px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; font-weight:500; }
+  input, select, textarea, button.btn {
+    width:100%; padding:8px 10px; background:var(--panel-2); color:var(--text);
+    border:1px solid var(--line); border-radius:7px; font:inherit; font-size:13px; }
+  textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; min-height:150px; }
+  button.btn { cursor:pointer; width:auto; }
+  button.primary { background:var(--accent-dim); border-color:var(--accent-dim); color:#fff; font-weight:600; }
+  button.primary:hover { background:var(--accent); }
+  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:150px; }
+  .actions { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+  .scroll { overflow-x:auto; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+  .ok{background:rgba(63,185,80,.16);color:var(--accent)}
+  .warn{background:rgba(210,153,34,.16);color:var(--warn)}
+  .bad{background:rgba(248,81,73,.16);color:var(--bad)}
+  .neutral{background:rgba(139,148,158,.16);color:var(--muted)}
+  .info{background:rgba(88,166,255,.16);color:var(--info)}
+  .num { font-variant-numeric:tabular-nums; }
+  .pos { color:var(--accent); } .neg { color:var(--bad); }
+  pre { background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:12px;
+        overflow:auto; font-size:11.5px; max-height:380px; margin:0; }
+  .check { border-left:3px solid var(--line); padding:9px 12px; margin-bottom:8px;
+           background:var(--panel-2); border-radius:0 7px 7px 0; }
+  .check.passed{border-left-color:var(--accent)} .check.failed,.check.error{border-left-color:var(--bad)}
+  .check.warning{border-left-color:var(--warn)} .check.skipped{border-left-color:var(--muted)}
+  .check .t { font-weight:600; font-size:12.5px; }
+  .check .m { color:var(--muted); font-size:12px; margin-top:2px; }
+  .check .r { margin-top:6px; font-size:12px; padding:7px 9px; background:var(--bg);
+              border-radius:6px; border:1px solid var(--line); }
+  .muted { color:var(--muted); }
+  .empty { color:var(--muted); padding:22px; text-align:center; font-size:13px; }
+  #toast { position:fixed; right:18px; bottom:18px; background:var(--panel); border:1px solid var(--line);
+           border-left:3px solid var(--accent); padding:11px 15px; border-radius:8px; max-width:420px;
+           display:none; box-shadow:0 8px 28px rgba(0,0,0,.35); font-size:13px; z-index:100; }
+  #toast.bad { border-left-color:var(--bad); }
+  #auth { max-width:380px; margin:70px auto; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:12.5px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+
+<div id="auth" class="card" hidden>
+  <h2>Sign in</h2>
+  <p class="hint">Uses your Supabase account. Everything you create is visible only to you.</p>
+  <label for="email">Email</label><input id="email" type="email" autocomplete="username">
+  <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
+  <div class="actions">
+    <button class="btn primary" id="signin">Sign in</button>
+    <button class="btn" id="signup">Create account</button>
+  </div>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>Freqtrade Platform</h1>
+  <span class="spacer"></span>
+  <span class="muted" id="whoami"></span>
+  <button class="btn" id="signout">Sign out</button>
+</header>
+
+<nav>
+  <button data-tab="builder" class="active">Strategy builder</button>
+  <button data-tab="backtests">Backtesting</button>
+  <button data-tab="wallets">Verification</button>
+  <button data-tab="bots">Live bot</button>
+</nav>
+
+<main>
+  <!-- ── Builder ───────────────────────────────────────────── -->
+  <section id="builder" class="active">
+    <div class="card">
+      <h2>Build a strategy</h2>
+      <p class="hint">Pick indicators and write rules over them. The platform compiles this into a
+        real freqtrade strategy &mdash; you never write Python, and a spec can only reference
+        indicators from the catalog.</p>
+      <div class="row">
+        <div><label for="s-name">Name</label><input id="s-name" placeholder="My pullback strategy"></div>
+        <div><label for="s-class">Class name</label><input id="s-class" placeholder="MyPullback"></div>
+        <div><label for="s-tf">Timeframe</label><select id="s-tf"></select></div>
+      </div>
+      <label for="s-spec">Spec</label>
+      <textarea id="s-spec" spellcheck="false"></textarea>
+      <div class="actions">
+        <button class="btn" id="b-compile">Compile &amp; preview</button>
+        <button class="btn primary" id="b-save">Save as new strategy</button>
+        <button class="btn" id="b-example">Load example</button>
+      </div>
+    </div>
+    <div class="card" id="compile-out" hidden>
+      <h2>Generated strategy</h2>
+      <div id="compile-status"></div>
+      <pre id="compile-code"></pre>
+    </div>
+    <div class="card">
+      <h2>Your strategies</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Name</th><th>Class</th><th>Version</th><th>Compiles</th><th>Updated</th><th></th>
+      </tr></thead><tbody id="strategy-rows"><tr><td colspan="6" class="empty">Nothing yet</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Indicator catalog</h2>
+      <p class="hint">Everything a spec may use. Each indicator lists the dataframe columns it produces.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Key</th><th>Category</th><th>Parameters</th><th>Produces</th>
+      </tr></thead><tbody id="catalog-rows"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ── Backtesting ───────────────────────────────────────── -->
+  <section id="backtests">
+    <div class="card">
+      <h2>Run a backtest</h2>
+      <p class="hint">Runs freqtrade's own backtesting engine. Any exchange, any pairs, any quote
+        currency, any past window the venue has history for.</p>
+      <div class="row">
+        <div><label for="bt-strategy">Strategy</label><select id="bt-strategy"></select></div>
+        <div><label for="bt-exchange">Exchange</label><input id="bt-exchange" value="kucoin" list="exchange-list">
+             <datalist id="exchange-list"></datalist></div>
+        <div><label for="bt-tf">Timeframe</label><select id="bt-tf"></select></div>
+      </div>
+      <div class="row">
+        <div><label for="bt-pairs">Pairs (comma separated)</label><input id="bt-pairs" value="BTC/USDT, ETH/USDT"></div>
+        <div><label for="bt-range">Timerange</label><input id="bt-range" placeholder="20240101-20241231"></div>
+        <div><label for="bt-stakecur">Quote currency</label><input id="bt-stakecur" value="USDT"></div>
+      </div>
+      <div class="row">
+        <div><label for="bt-balance">Starting balance</label><input id="bt-balance" type="number" value="1000"></div>
+        <div><label for="bt-stake">Stake per trade</label><input id="bt-stake" type="number" value="100"></div>
+        <div><label for="bt-slots">Max open trades</label><input id="bt-slots" type="number" value="3"></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="bt-run">Queue backtest</button>
+        <button class="btn" id="bt-refresh">Refresh</button></div>
+    </div>
+    <div class="card">
+      <h2>Queue</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
+      </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Results</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Strategy</th><th>Window</th><th>Trades</th><th>Win rate</th><th>Profit</th>
+        <th>Drawdown</th><th>Sharpe</th><th>Best</th><th>Worst</th>
+      </tr></thead><tbody id="run-rows"><tr><td colspan="9" class="empty">No results yet</td></tr></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ── Verification ──────────────────────────────────────── -->
+  <section id="wallets">
+    <div class="card">
+      <h2>Connect a wallet</h2>
+      <p class="hint">Verification runs against <em>your</em> wallet with <em>your</em> credentials.
+        This platform never holds funds. Only the <strong>name</strong> of the environment variable
+        holding each secret is stored &mdash; never the secret.</p>
+      <div class="row">
+        <div><label for="w-label">Label</label><input id="w-label" placeholder="KuCoin main"></div>
+        <div><label for="w-provider">Provider</label><input id="w-provider" value="kucoin" list="exchange-list"></div>
+      </div>
+      <div class="row">
+        <div><label for="w-key">Key variable</label><input id="w-key" value="FREQTRADE__EXCHANGE__KEY"></div>
+        <div><label for="w-secret">Secret variable</label><input id="w-secret" value="FREQTRADE__EXCHANGE__SECRET"></div>
+        <div><label for="w-pass">Passphrase variable</label><input id="w-pass" value="FREQTRADE__EXCHANGE__PASSWORD"></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="w-add">Connect</button></div>
+    </div>
+    <div class="card">
+      <h2>Connected wallets</h2>
+      <div id="wallet-list"><div class="empty">None connected</div></div>
+    </div>
+    <div class="card" id="verify-out" hidden>
+      <h2>Verification result</h2>
+      <div id="verify-summary"></div>
+      <div id="verify-checks"></div>
+    </div>
+  </section>
+
+  <!-- ── Bots ──────────────────────────────────────────────── -->
+  <section id="bots">
+    <div class="card">
+      <h2>Bots</h2>
+      <p class="hint">The trading bot runs as a private service with no public ingress. Its state
+        reaches you through the shared database, not by exposing the bot.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Name</th><th>Health</th><th>Exchange</th><th>Strategy</th><th>Mode</th>
+        <th>Open trades</th><th>Last seen</th>
+      </tr></thead><tbody id="bot-rows"><tr><td colspan="7" class="empty">No bots registered</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Live trades</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Open</th><th>Amount</th><th>Open rate</th><th>Close rate</th><th>Profit</th><th>Exit</th>
+      </tr></thead><tbody id="trade-rows"><tr><td colspan="7" class="empty">No trades</td></tr></tbody></table></div>
+    </div>
+  </section>
+</main>
+</div>
+
+<div id="toast"></div>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+const EXAMPLE = {
+  class_name: "MyPullback",
+  description: "Buy pullbacks inside an uptrend",
+  timeframe: "5m",
+  indicators: [
+    { id: "rsi14", kind: "rsi", params: { period: 14 } },
+    { id: "ema_fast", kind: "ema", params: { period: 21 } },
+    { id: "ema_slow", kind: "ema", params: { period: 200 } },
+    { id: "vol", kind: "volume_mean", params: { period: 20 } }
+  ],
+  entry: { long: { all: [
+    { left: "ema_fast", op: "gt", right: "ema_slow" },
+    { left: "rsi14", op: "lt", right: { const: 40 } },
+    { left: "volume", op: "gt", right: "vol" }
+  ]}},
+  exit: { long: { any: [
+    { left: "rsi14", op: "gt", right: { const: 70 } },
+    { left: "ema_fast", op: "crosses_below", right: "ema_slow" }
+  ]}},
+  risk: { stoploss: -0.05, minimal_roi: { "0": 0.05, "60": 0.02 },
+          trailing: { enabled: true, positive: 0.01, offset: 0.02 } }
+};
+
+let sb = null, session = null;
+const $ = (id) => document.getElementById(id);
+
+function toast(message, bad = false) {
+  const el = $("toast");
+  el.textContent = message;
+  el.className = bad ? "bad" : "";
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => (el.style.display = "none"), bad ? 9000 : 4000);
+}
+
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  const response = await fetch(path, { ...options, headers });
+  const text = await response.text();
+  let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) throw new Error(body?.detail ? JSON.stringify(body.detail) : `${response.status} ${text}`);
+  return body;
+}
+
+const fmtNum = (v, d = 2) => (v === null || v === undefined || v === "") ? "—" : Number(v).toFixed(d);
+const fmtPct = (v, d = 2) => (v === null || v === undefined) ? "—" : `${Number(v).toFixed(d)}%`;
+const signed = (v, text) => `<span class="${Number(v) >= 0 ? "pos" : "neg"}">${text}</span>`;
+const shortDate = (v) => v ? new Date(v).toISOString().slice(0, 16).replace("T", " ") : "—";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ── boot ────────────────────────────────────────────────────
+(async function boot() {
+  let cfg;
+  try { cfg = await (await fetch("/api/config")).json(); } catch { cfg = {}; }
+  if (!cfg.supabase_url || !cfg.supabase_anon_key) {
+    document.body.innerHTML =
+      '<div class="card" style="max-width:560px;margin:70px auto">' +
+      "<h2>Not configured</h2><p class=\"hint\">Set SUPABASE_URL and SUPABASE_ANON_KEY on the app " +
+      "service, then reload. The API is running; it just has nothing to authenticate against.</p></div>";
+    return;
+  }
+  sb = createClient(cfg.supabase_url, cfg.supabase_anon_key);
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  sb.auth.onAuthStateChange((_e, s) => { session = s; render(); });
+  render();
+  loadCatalog();
+})();
+
+function render() {
+  $("auth").hidden = !!session;
+  $("app").hidden = !session;
+  if (session) {
+    $("whoami").textContent = session.user.email;
+    refreshAll();
+  }
+}
+
+$("signin").onclick = async () => {
+  const { error } = await sb.auth.signInWithPassword(
+    { email: $("email").value.trim(), password: $("password").value });
+  error ? toast(error.message, true) : toast("Signed in");
+};
+$("signup").onclick = async () => {
+  const { error } = await sb.auth.signUp(
+    { email: $("email").value.trim(), password: $("password").value });
+  error ? toast(error.message, true) : toast("Account created. Check your email if confirmation is on.");
+};
+$("signout").onclick = async () => { await sb.auth.signOut(); session = null; render(); };
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll("main section").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $(b.dataset.tab).classList.add("active");
+});
+
+// ── catalog ─────────────────────────────────────────────────
+async function loadCatalog() {
+  const cat = await api("/api/catalog/indicators");
+  for (const select of [$("s-tf"), $("bt-tf")]) {
+    select.innerHTML = cat.timeframes.map(t =>
+      `<option ${t === "5m" ? "selected" : ""}>${t}</option>`).join("");
+  }
+  $("catalog-rows").innerHTML = cat.indicators.map(i => `<tr>
+    <td><code>${esc(i.key)}</code></td><td>${esc(i.category)}</td>
+    <td class="muted">${i.params.map(p => `${esc(p.name)}=${esc(p.default)}`).join(", ") || "none"}</td>
+    <td class="muted"><code>${i.outputs.map(esc).join(", ")}</code></td></tr>`).join("");
+  try {
+    const ex = await api("/api/catalog/exchanges");
+    $("exchange-list").innerHTML = ex.exchanges.map(e => `<option value="${esc(e)}">`).join("");
+  } catch { /* the picker still accepts free text */ }
+}
+
+// ── builder ─────────────────────────────────────────────────
+$("b-example").onclick = () => {
+  $("s-spec").value = JSON.stringify(EXAMPLE, null, 2);
+  $("s-name").value = "My pullback strategy";
+  $("s-class").value = EXAMPLE.class_name;
+};
+
+function currentSpec() {
+  const spec = JSON.parse($("s-spec").value);
+  if ($("s-class").value.trim()) spec.class_name = $("s-class").value.trim();
+  if ($("s-tf").value) spec.timeframe = $("s-tf").value;
+  return spec;
+}
+
+$("b-compile").onclick = async () => {
+  try {
+    const out = await api("/api/strategies/compile",
+      { method: "POST", body: JSON.stringify({ spec: currentSpec() }) });
+    $("compile-out").hidden = false;
+    const c = out.compile;
+    $("compile-status").innerHTML = c.ok
+      ? `<span class="pill ok">compiles</span> <span class="muted">warm-up
+         ${out.startup_candle_count} candles &middot; ${c.entry_signals} entry and
+         ${c.exit_signals} exit signals on the test series</span>`
+      : `<span class="pill bad">failed</span> <span class="muted">${esc(c.error)}</span>`;
+    $("compile-code").textContent = out.code;
+    toast(c.ok ? "Strategy compiles" : "Strategy did not compile", !c.ok);
+  } catch (e) { toast(e.message, true); }
+};
+
+$("b-save").onclick = async () => {
+  try {
+    await api("/api/strategies", { method: "POST", body: JSON.stringify({
+      name: $("s-name").value.trim() || "Untitled strategy", spec: currentSpec() }) });
+    toast("Strategy saved");
+    loadStrategies();
+  } catch (e) { toast(e.message, true); }
+};
+
+async function loadStrategies() {
+  const { strategies } = await api("/api/strategies");
+  $("strategy-rows").innerHTML = strategies.length ? strategies.map(s => `<tr>
+      <td>${esc(s.name)}</td><td><code>${esc(s.class_name)}</code></td>
+      <td class="num">—</td><td><span class="pill neutral">saved</span></td>
+      <td class="muted">${shortDate(s.updated_at)}</td>
+      <td><button class="btn" data-load="${esc(s.id)}">Open</button></td></tr>`).join("")
+    : '<tr><td colspan="6" class="empty">Nothing yet</td></tr>';
+
+  $("bt-strategy").innerHTML =
+    strategies.map(s => `<option value="v:${esc(s.current_version_id)}">${esc(s.name)}</option>`).join("") +
+    ["TrendPullbackStrategy", "EMACrossoverScalper", "MeanReversionScalper",
+     "ConservativeRSI", "EMACrossover", "BollingerBreakout", "ActiveTrader"]
+      .map(n => `<option value="b:${n}">${n} (built-in)</option>`).join("");
+
+  document.querySelectorAll("[data-load]").forEach(b => b.onclick = async () => {
+    const detail = await api(`/api/strategies/${b.dataset.load}`);
+    const code = await api(`/api/strategies/${b.dataset.load}/code`);
+    $("s-name").value = detail.strategy.name;
+    $("s-class").value = detail.strategy.class_name;
+    $("compile-out").hidden = false;
+    $("compile-status").innerHTML = code.compiles
+      ? '<span class="pill ok">compiles</span>' : `<span class="pill bad">${esc(code.compile_error)}</span>`;
+    $("compile-code").textContent = code.generated_code || "";
+  });
+}
+
+// ── backtesting ─────────────────────────────────────────────
+$("bt-run").onclick = async () => {
+  const choice = $("bt-strategy").value;
+  const body = {
+    exchange: $("bt-exchange").value.trim(),
+    timeframe: $("bt-tf").value,
+    pairs: $("bt-pairs").value.split(",").map(p => p.trim().toUpperCase()).filter(Boolean),
+    timerange: $("bt-range").value.trim() || null,
+    stake_currency: $("bt-stakecur").value.trim().toUpperCase(),
+    stake_amount: Number($("bt-stake").value) || null,
+    starting_balance: Number($("bt-balance").value),
+    max_open_trades: Number($("bt-slots").value),
+  };
+  if (choice?.startsWith("v:")) body.strategy_version_id = choice.slice(2);
+  else if (choice?.startsWith("b:")) body.builtin_strategy = choice.slice(2);
+  else return toast("Pick a strategy first", true);
+
+  try {
+    await api("/api/backtests", { method: "POST", body: JSON.stringify(body) });
+    toast("Backtest queued");
+    loadJobs();
+  } catch (e) { toast(e.message, true); }
+};
+$("bt-refresh").onclick = () => { loadJobs(); loadRuns(); };
+
+async function loadJobs() {
+  const { jobs } = await api("/api/backtests/jobs");
+  const cls = { completed: "ok", failed: "bad", running: "info", queued: "neutral", cancelled: "neutral" };
+  $("job-rows").innerHTML = jobs.length ? jobs.map(j => `<tr>
+      <td><span class="pill ${cls[j.status] || "neutral"}">${esc(j.status)}</span></td>
+      <td>${esc(j.builtin_strategy || "builder")}</td>
+      <td class="muted">${esc((j.pairs || []).join(", ").slice(0, 40))}</td>
+      <td class="muted">${esc(j.timerange || "all")}</td>
+      <td class="muted">${esc(j.error || j.progress || "")}</td>
+      <td class="muted">${shortDate(j.created_at)}</td></tr>`).join("")
+    : '<tr><td colspan="6" class="empty">No jobs</td></tr>';
+}
+
+async function loadRuns() {
+  const { runs } = await api("/api/backtests");
+  $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr>
+      <td>${esc(r.strategy_name)}</td>
+      <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}</td>
+      <td class="num">${r.total_trades}</td>
+      <td class="num">${fmtPct((r.win_rate || 0) * 100, 1)}</td>
+      <td class="num">${signed(r.profit_total_pct, fmtPct(r.profit_total_pct))}</td>
+      <td class="num neg">${fmtPct(r.max_drawdown_pct)}</td>
+      <td class="num">${fmtNum(r.sharpe)}</td>
+      <td class="muted">${esc(r.best_pair || "—")}</td>
+      <td class="muted">${esc(r.worst_pair || "—")}</td></tr>`).join("")
+    : '<tr><td colspan="9" class="empty">No results yet</td></tr>';
+}
+
+// ── wallets ─────────────────────────────────────────────────
+$("w-add").onclick = async () => {
+  try {
+    await api("/api/accounts", { method: "POST", body: JSON.stringify({
+      label: $("w-label").value.trim() || "Wallet",
+      provider: $("w-provider").value.trim().toLowerCase(),
+      api_key_env_var: $("w-key").value.trim() || null,
+      api_secret_env_var: $("w-secret").value.trim() || null,
+      api_password_env_var: $("w-pass").value.trim() || null,
+    })});
+    toast("Wallet connected");
+    loadWallets();
+  } catch (e) { toast(e.message, true); }
+};
+
+async function loadWallets() {
+  const { accounts } = await api("/api/accounts");
+  const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad" };
+  $("wallet-list").innerHTML = accounts.length ? accounts.map(a => `
+    <div class="card" style="margin:0 0 10px;background:var(--panel-2)">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <strong>${esc(a.label)}</strong>
+        <span class="pill neutral">${esc(a.provider)}</span>
+        ${a.last_verification ? `<span class="pill ${cls[a.last_verification] || "neutral"}">${esc(a.last_verification)}</span>` : ""}
+        <span class="muted" style="font-size:12px">${a.last_verified_at ? "checked " + shortDate(a.last_verified_at) : "never checked"}</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" data-verify="${esc(a.id)}">Verify</button>
+      </div>
+      ${a.verification_notes ? `<div class="muted" style="margin-top:7px;font-size:12px">${esc(a.verification_notes)}</div>` : ""}
+    </div>`).join("") : '<div class="empty">None connected</div>';
+
+  document.querySelectorAll("[data-verify]").forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "Checking…";
+    try {
+      const out = await api(`/api/accounts/${b.dataset.verify}/verify`, {
+        method: "POST", body: JSON.stringify({
+          kind: "preflight",
+          pairs: $("bt-pairs").value.split(",").map(p => p.trim().toUpperCase()).filter(Boolean),
+          stake_amount: Number($("bt-stake").value) || 10,
+          max_open_trades: Number($("bt-slots").value) || 1,
+        })});
+      showVerification(out);
+      loadWallets();
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "Verify"; }
+  });
+}
+
+function showVerification(out) {
+  $("verify-out").hidden = false;
+  const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad", skipped: "neutral" };
+  $("verify-summary").innerHTML = `
+    <p><span class="pill ${cls[out.status] || "neutral"}">${esc(out.status)}</span>
+       ${esc(out.summary)}</p>
+    <dl class="kv">
+      <dt>Checks</dt><dd>${out.counts.passed} passed, ${out.counts.warning} warned, ${out.counts.failed} failed</dd>
+      <dt>Egress</dt><dd>${esc(out.egress_ip || "unknown")} ${out.egress_region ? "(" + esc(out.egress_region) + ")" : ""}</dd>
+      <dt>Took</dt><dd>${out.duration_ms} ms</dd>
+    </dl>`;
+  $("verify-checks").innerHTML = out.checks.map(c => `
+    <div class="check ${esc(c.status)}">
+      <div class="t">${esc(c.title)} <span class="pill ${cls[c.status] || "neutral"}">${esc(c.status)}</span></div>
+      <div class="m">${esc(c.message)}</div>
+      ${c.remediation ? `<div class="r"><strong>How to fix:</strong> ${esc(c.remediation)}</div>` : ""}
+    </div>`).join("");
+  $("verify-out").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ── bots ────────────────────────────────────────────────────
+async function loadBots() {
+  const { bots } = await api("/api/bots");
+  const cls = { healthy: "ok", stale: "warn", offline: "bad", never_seen: "neutral" };
+  $("bot-rows").innerHTML = bots.length ? bots.map(b => `<tr>
+      <td>${esc(b.name)}</td>
+      <td><span class="pill ${cls[b.health] || "neutral"}">${esc(b.health)}</span></td>
+      <td>${esc(b.exchange)}</td><td>${esc(b.strategy || "—")}</td>
+      <td>${esc(b.trading_mode)}</td><td class="num">${b.open_trades ?? 0}</td>
+      <td class="muted">${shortDate(b.last_heartbeat_at)}</td></tr>`).join("")
+    : '<tr><td colspan="7" class="empty">No bots registered</td></tr>';
+
+  const { trades } = await api("/api/bots/live/trades");
+  $("trade-rows").innerHTML = trades.length ? trades.map(t => `<tr>
+      <td>${esc(t.pair)}</td><td class="muted">${shortDate(t.open_date)}</td>
+      <td class="num">${fmtNum(t.amount, 6)}</td><td class="num">${fmtNum(t.open_rate, 6)}</td>
+      <td class="num">${fmtNum(t.close_rate, 6)}</td>
+      <td class="num">${t.close_profit_abs != null ? signed(t.close_profit_abs, fmtNum(t.close_profit_abs)) : "open"}</td>
+      <td class="muted">${esc(t.exit_reason || "—")}</td></tr>`).join("")
+    : '<tr><td colspan="7" class="empty">No trades</td></tr>';
+}
+
+async function refreshAll() {
+  for (const [name, fn] of Object.entries({ strategies: loadStrategies, jobs: loadJobs,
+                                            runs: loadRuns, wallets: loadWallets, bots: loadBots })) {
+    try { await fn(); } catch (e) { console.warn(name, e); }
+  }
+}
+</script>
+</body>
+</html>

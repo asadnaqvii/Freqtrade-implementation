@@ -1,20 +1,65 @@
+# Render blueprint for the freqtrade platform.
+#
+# Three services. The one that trades is private; the one the internet reaches
+# cannot place an order.
+#
+#   freqtrade-bot     private service, no public URL. Holds the API keys.
+#   freqtrade-app     public web service. API + dashboard. No API keys.
+#   freqtrade-worker  background worker. Runs backtests. No API keys.
+#
+# REGION: every service is pinned to singapore, and that is not cosmetic.
+# KuCoin blocks requests from US IP addresses, and Render defaults to Oregon
+# (US) when no region is given -- which is exactly why this deployment failed
+# on Render while the same code worked on Railway. A service's region is fixed
+# when it is created and cannot be changed afterwards, so a service created in
+# the wrong region has to be deleted and recreated. Frankfurt also works;
+# ohio, oregon and virginia do not.
+#
+# Render's private network only links services in the same region, so the app
+# can only reach the bot because all three share one.
+
 services:
-  - type: web
+  # ── The trading bot: private, no public ingress ──────────────────────────
+  - type: pserv
     name: freqtrade-bot
     runtime: python
     plan: starter
-    buildCommand: chmod +x build.sh && ./build.sh
+    region: singapore
+    buildCommand: ./build.sh
     startCommand: python render_start.py
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11.6"
+        value: "3.11.9"
       - key: PORT
         value: "8080"
+      - key: BOT_NAME
+        value: freqtrade-bot
+      - key: FREQTRADE_STRATEGY
+        value: TrendPullbackStrategy
+      - key: FREQTRADE__EXCHANGE__NAME
+        value: kucoin
+      # Freqtrade's own tables live in their own schema, which is never exposed
+      # through the Supabase API.
+      - key: FREQTRADE_DB_SCHEMA
+        value: ft_main
+      - key: DRY_RUN
+        value: "false"
+      # Exchange credentials. Set these in the dashboard, not here.
       - key: FREQTRADE__EXCHANGE__KEY
         sync: false
       - key: FREQTRADE__EXCHANGE__SECRET
         sync: false
       - key: FREQTRADE__EXCHANGE__PASSWORD
+        sync: false
+      # Supabase. SUPABASE_DB_URL should be the session pooler URI: the direct
+      # db.<ref>.supabase.co host resolves to IPv6 only, which Render cannot reach.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: PLATFORM_OWNER_ID
         sync: false
       - key: JWT_SECRET_KEY
         generateValue: true
@@ -22,3 +67,59 @@ services:
         sync: false
       - key: API_PASSWORD
         sync: false
+
+  # ── The public application: API and dashboard ────────────────────────────
+  - type: web
+    name: freqtrade-app
+    runtime: python
+    plan: starter
+    region: singapore
+    buildCommand: ./build.sh
+    startCommand: uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Needed to verify access tokens. Project Settings -> API -> JWT Secret.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      # The bot is unreachable from the internet; this is its private address.
+      - key: FREQTRADE_API_BASE_URL
+        value: http://freqtrade-bot:8080
+      # Same-origin only unless you add a separate frontend host.
+      - key: CORS_ORIGINS
+        value: ""
+
+  # ── The backtest worker ──────────────────────────────────────────────────
+  - type: worker
+    name: freqtrade-worker
+    runtime: python
+    plan: starter
+    region: singapore
+    buildCommand: ./build.sh
+    startCommand: python -m app.worker.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Candle data is cached here so repeat backtests over the same window do
+      # not re-download; without a disk this is lost on every deploy.
+      - key: BACKTEST_DATA_DIR
+        value: /data/candles
+      - key: BACKTEST_USER_DIR
+        value: /data/user_data
+      - key: WORKER_POLL_SECONDS
+        value: "10"
+    disk:
+      name: candles
+      mountPath: /data
+      sizeGB: 10
