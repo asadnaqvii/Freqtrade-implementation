@@ -222,3 +222,14 @@ def test_nan_metrics_do_not_crash_the_assessment():
     a = verdict.assess({"total_trades": 50, "wins": 25, "sharpe": float("nan"),
                         "profit_total_pct": float("inf"), "max_drawdown_pct": None})
     assert a.findings
+
+
+def test_a_losing_run_is_described_plainly_not_as_a_ratio():
+    # "lost 2.1% from a peak to make -2.1%" reads like a bug. A negative return
+    # has no drawdown trade-off to weigh.
+    a = verdict.assess({"total_trades": 101, "wins": 24,
+                        "profit_total_pct": -2.1, "max_drawdown_pct": 2.1})
+    f = find(a, "risk.drawdown")
+    assert f.verdict == verdict.BAD
+    assert "lost money overall" in f.message
+    assert "to make -" not in f.message

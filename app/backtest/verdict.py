@@ -245,6 +245,17 @@ def _check_drawdown(run: dict[str, Any], profit_pct: float | None) -> Finding | 
         return Finding("risk.drawdown", "Worst drop", WEAK,
                        f"Deepest fall from a peak was {drawdown:.1f}%.")
 
+    if profit_pct <= 0:
+        # The ratio is meaningless once the numerator is negative, and phrasing it
+        # as "lost X to make -Y" reads like a bug. Say the plain thing.
+        return Finding(
+            "risk.drawdown", "Worst drop", BAD,
+            f"It lost money overall ({profit_pct:.1f}%) and fell {drawdown:.1f}% "
+            "from its best point along the way.",
+            "There is no drawdown-to-return trade-off to weigh here: the return "
+            "is negative.",
+        )
+
     ratio = profit_pct / drawdown
     if ratio < 1:
         return Finding(
