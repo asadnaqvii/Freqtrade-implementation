@@ -160,6 +160,74 @@ try:
 except Exception as exc:
     print(f"WARNING: could not read platform settings ({exc}); using SQLite", flush=True)
 
+# A connection is what holds a Postgres advisory lock, so this has to outlive the
+# function that took it. Module level, deliberately.
+_trading_lock_conn = None
+
+
+def acquire_trading_lock(url, name, wait_seconds=150):
+    """Refuse to trade while another instance of this bot is trading.
+
+    Freqtrade assumes it is alone. It keeps open positions in memory and checks
+    "do I already hold this pair?" against that, not against the database. Two
+    processes sharing one database therefore each believe the pair is free, and
+    both open a position.
+
+    This is not hypothetical: a rolling deploy did exactly that here, opening two
+    trades on the same pair in the same second while the old and new instances
+    overlapped. In dry-run it cost nothing. On real money it is two positions
+    where the strategy intended one, at twice the intended size, and neither
+    process knows about the other's.
+
+    A Postgres advisory lock is the right shape for this: it is held by a
+    connection, so it releases by itself when a process dies, however it dies.
+    No stale lock to clean up after a crash.
+    """
+    global _trading_lock_conn
+    try:
+        import hashlib
+        import psycopg2
+    except ImportError:
+        print("psycopg2 missing; cannot take the trading lock", flush=True)
+        return False
+
+    key = int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
+    raw = url.replace("postgresql+psycopg2://", "postgresql://", 1)
+    try:
+        conn = psycopg2.connect(raw, connect_timeout=20)
+        conn.autocommit = True
+    except Exception as exc:
+        print(f"could not connect to take the trading lock: {exc}", flush=True)
+        return False
+
+    deadline = time.time() + wait_seconds
+    announced = False
+    while True:
+        with conn.cursor() as cur:
+            cur.execute("select pg_try_advisory_lock(%s)", (key,))
+            if cur.fetchone()[0]:
+                _trading_lock_conn = conn
+                print(f"holding the trading lock for {name}", flush=True)
+                return True
+        if not announced:
+            print(
+                f"another instance still holds the trading lock for {name}; waiting "
+                f"up to {wait_seconds}s for it to exit. This is normal during a deploy.",
+                flush=True,
+            )
+            announced = True
+        if time.time() >= deadline:
+            conn.close()
+            print(
+                "TRADING LOCK NOT ACQUIRED: refusing to start a second trading "
+                "instance. Two freqtrade processes on one database open duplicate "
+                "positions. Stop the other instance, then redeploy.",
+                flush=True,
+            )
+            return False
+        time.sleep(5)
+
+
 def verify_database(url, expected_schema):
     """Connect once and confirm the session lands in the right schema.
 
@@ -440,6 +508,12 @@ argv = [
 ]
 if db_url:
     argv += ["--db-url", db_url]
+
+# Nothing above this line places an order. Everything below does, so this is
+# where being the only trading instance stops being optional.
+if db_url:
+    if not acquire_trading_lock(db_url, bot_name):
+        sys.exit(1)
 
 print(f"starting freqtrade on port {port}", flush=True)
 sys.stdout.flush()
