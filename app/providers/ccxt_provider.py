@@ -193,18 +193,28 @@ class CcxtProvider(WalletProvider):
         return {"currencies_held": len([c for c, v in (balance.get("total") or {}).items() if v])}
 
     def permissions(self) -> set[str]:
-        """Best-effort permission read.
+        """Refuse to guess. ccxt has no portable permissions call.
 
-        ccxt has no portable permissions call, so the generic implementation
-        infers from what succeeds. Subclasses that can ask directly should.
+        The tempting implementation infers from what succeeds: fetch a balance,
+        conclude "read". But the check that consumes this exists to catch a key
+        that can *withdraw*, and inference cannot see withdrawal rights without
+        attempting a withdrawal. Returning an inferred set would therefore report
+        "no withdrawal rights" for every venue we cannot introspect -- a security
+        control that silently passes is worse than one that says it did not run.
+
+        Subclasses that can ask the venue directly override this.
         """
-        found: set[str] = set()
         try:
             self.exchange.fetch_balance()
-            found.add("read")
         except Exception as exc:
+            # Surface a real failure -- unreachable, geo-blocked, bad key --
+            # rather than reporting it as an unsupported introspection.
             raise self._translate(exc) from exc
-        return found
+        raise ProviderError(
+            f"{self.ccxt_id} does not report what an API key is allowed to do, so "
+            "this cannot be checked automatically. Confirm on the exchange that the "
+            "key can trade and cannot withdraw."
+        )
 
     def fetch_balances(self) -> list[Balance]:
         try:

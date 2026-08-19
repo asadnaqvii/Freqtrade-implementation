@@ -19,6 +19,7 @@ from app.providers.base import (
     MarketInfo,
     OrderInfo,
     ProviderAuthError,
+    ProviderError,
     ProviderGeoBlockError,
     ProviderUnavailableError,
     WalletProvider,
@@ -351,3 +352,91 @@ def test_credentials_repr_never_leaks_the_key():
     creds = Credentials(key="SUPERSECRETKEY", secret="alsosecret")
     assert "SUPERSECRETKEY" not in repr(creds)
     assert "alsosecret" not in repr(creds)
+
+
+# ---------------------------------------------------------------------------
+# Permission introspection: not knowing must not read as knowing
+# ---------------------------------------------------------------------------
+
+class FakeKuCoinExchange:
+    """Stands in for ccxt's kucoin, returning whatever the test supplies."""
+
+    def __init__(self, responses):
+        self._responses = responses
+        self.called = []
+
+    def _answer(self, name):
+        self.called.append(name)
+        value = self._responses.get(name, KeyError)
+        if value is KeyError:
+            raise AttributeError(name)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def __getattr__(self, name):
+        if name.startswith("private_get_"):
+            return lambda: self._answer(name)
+        raise AttributeError(name)
+
+    def fetch_balance(self):
+        return {"total": {"USDT": 100.0}}
+
+
+def kucoin_with(responses):
+    provider = KuCoinProvider(Credentials(key="k", secret="s", password="p"))
+    provider._exchange = FakeKuCoinExchange(responses)
+    return provider
+
+
+def test_kucoin_reads_permissions_from_the_api_key_endpoint():
+    provider = kucoin_with(
+        {"private_get_user_api_key": {"data": [{"permission": "General,Trade"}]}}
+    )
+    assert provider.permissions() == {"general", "trade"}
+
+
+def test_kucoin_accepts_a_list_valued_permission_field():
+    provider = kucoin_with(
+        {"private_get_user_api_key": {"data": {"permissions": ["General", "Trade"]}}}
+    )
+    assert provider.permissions() == {"general", "trade"}
+
+
+def test_kucoin_refuses_to_call_an_empty_answer_read_only():
+    # The account-summary endpoint carries no permission field. Reading it and
+    # returning {"read"} made an unanswerable question look like a definite
+    # read-only key -- and made the withdrawal check pass on no evidence.
+    provider = kucoin_with({"private_get_user_info": {"data": {"level": 0}}})
+    with pytest.raises(ProviderError):
+        provider.permissions()
+
+
+def test_kucoin_falls_through_to_the_older_endpoint():
+    provider = kucoin_with({
+        "private_get_user_api_key": RuntimeError("404 not found"),
+        "private_get_user_info": {"data": [{"permission": "Trade"}]},
+    })
+    assert provider.permissions() == {"trade"}
+
+
+def test_a_venue_that_cannot_report_permissions_says_so():
+    provider = CcxtProvider("binance", Credentials(key="k", secret="s"))
+    provider._exchange = FakeKuCoinExchange({})
+    with pytest.raises(ProviderError):
+        provider.permissions()
+
+
+def test_an_unreadable_permission_list_never_clears_the_withdrawal_check():
+    """The important half: no evidence must not become a passing security check."""
+
+    class Unintrospectable(FakeProvider):
+        def permissions(self):
+            raise ProviderError("this venue does not report key permissions")
+
+    outcome = engine.run_suite("connectivity", Unintrospectable())
+    perm = next(r for r in outcome.results if r.code == "provider.permissions")
+    assert perm.status == C.SKIPPED
+    assert perm.status != C.PASSED
+    assert perm.severity == C.WARN_SEV, "an unrun security check must not look like info"
+    assert "withdraw" in (perm.remediation or "")

@@ -20,6 +20,7 @@ from app.providers.base import (
     ConnectivityReport,
     Credentials,
     ProviderAuthError,
+    ProviderError,
     ProviderGeoBlockError,
 )
 from app.providers.ccxt_provider import CcxtProvider
@@ -54,34 +55,60 @@ class KuCoinProvider(CcxtProvider):
             )
         return super().verify_credentials()
 
+    #: KuCoin's "Get API Key Info" endpoint, which reports what the key may do.
+    #: user_info is a different endpoint -- the account summary -- and carries no
+    #: permission field at all, so reading permissions from it silently produced
+    #: an empty list that looked like a read-only key.
+    _KEY_INFO_METHODS = ("private_get_user_api_key", "private_get_user_info")
+
     def permissions(self) -> set[str]:
         """Read the permissions KuCoin actually granted the key.
 
-        KuCoin's account endpoint reports the permission list directly, so unlike
-        the generic provider this does not have to infer from what succeeds --
-        which matters, because inferring cannot detect withdrawal rights without
-        attempting a withdrawal.
+        KuCoin reports the permission list directly, so unlike the generic
+        provider this does not have to infer from what succeeds -- which matters,
+        because inference cannot detect withdrawal rights without attempting a
+        withdrawal.
+
+        If no endpoint yields a permission list, this raises rather than
+        returning what it managed to infer. The check that reads this exists to
+        catch a key that can withdraw, and "I could not tell" reported as "read
+        only" is exactly the false all-clear it is meant to prevent.
         """
-        found = {"read"}
-        try:
-            # ccxt exposes KuCoin's user-info endpoint; the shape varies by
-            # version, so treat anything unexpected as "could not determine"
-            # rather than asserting the key is safe.
-            raw = self.exchange.private_get_user_info()
+        found: set[str] = set()
+        tried: list[str] = []
+
+        for method_name in self._KEY_INFO_METHODS:
+            method = getattr(self.exchange, method_name, None)
+            if method is None:
+                continue
+            tried.append(method_name)
+            try:
+                raw = method()
+            except Exception as exc:
+                log.info("kucoin %s unavailable: %s", method_name, exc)
+                continue
+
             data = raw.get("data") if isinstance(raw, dict) else None
             entries = data if isinstance(data, list) else [data] if data else []
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                for permission in (entry.get("permission") or "").split(","):
+                # The field has been called both 'permission' and 'permissions'.
+                declared = entry.get("permission") or entry.get("permissions") or ""
+                if isinstance(declared, list):
+                    declared = ",".join(str(item) for item in declared)
+                for permission in str(declared).split(","):
                     cleaned = permission.strip().lower()
                     if cleaned:
                         found.add(cleaned)
-        except Exception as exc:
-            log.info("kucoin permission introspection unavailable: %s", exc)
-            # Fall back to the generic behaviour rather than claiming to know.
-            return super().permissions()
-        return found
+            if found:
+                return found
+
+        raise ProviderError(
+            "KuCoin did not report what this key is allowed to do"
+            + (f" (tried {', '.join(tried)})" if tried else "")
+            + ". Check the key on KuCoin directly."
+        )
 
     def check_connectivity(self) -> ConnectivityReport:
         report = super().check_connectivity()

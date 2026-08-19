@@ -338,9 +338,17 @@ def check_permissions(ctx: CheckContext) -> CheckResult:
             severity=WARN_SEV, message="Blocked before permissions could be read.",
         )
     except ProviderError as exc:
+        # Deliberately a warning, not info: this check is the only thing standing
+        # between a withdrawal-capable key and a silent all-clear, so its absence
+        # has to be visible rather than blend into the passing rows.
         return CheckResult(
             code="provider.permissions", title="Key permissions", status=SKIPPED,
             severity=WARN_SEV, message=f"Could not read permissions: {exc}",
+            remediation=(
+                "Check the key on the exchange by hand: it should be able to trade and "
+                "read, and must not be able to withdraw. Until that is confirmed, treat "
+                "the withdrawal check as not done rather than as passed."
+            ),
         )
 
     withdraw = {p for p in permissions if "withdraw" in p or "transfer" in p}
