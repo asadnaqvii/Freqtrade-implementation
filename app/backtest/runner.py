@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -264,8 +265,17 @@ def run_backtest(
 
     data_path = Path(data_dir)
     user_path = Path(user_dir)
-    strategy_dir = user_path / "strategies"
-    for directory in (data_path, user_path, strategy_dir, user_path / "backtest_results"):
+
+    # Each run gets its own strategy and results directories. Sharing them means
+    # two workers running concurrently can overwrite each other's strategy file
+    # when two users happen to pick the same class name, and can pick up each
+    # other's export when scanning the results directory afterwards. The candle
+    # data directory stays shared -- that one is a cache, and sharing it is the
+    # entire point.
+    run_root = user_path / "runs" / uuid.uuid4().hex
+    strategy_dir = run_root / "strategies"
+    results_dir = run_root / "backtest_results"
+    for directory in (data_path, strategy_dir, results_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     if request.strategy_source:
@@ -307,8 +317,7 @@ def run_backtest(
                 if progress:
                     progress("download failed; trying cached candles")
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        export_file = user_path / "backtest_results" / f"{request.strategy_name}_{stamp}.json"
+        export_file = results_dir / f"{request.strategy_name}.json"
 
         backtest_cmd = [
             *freqtrade_cmd(), "backtesting",
@@ -316,7 +325,7 @@ def run_backtest(
             "--strategy", request.strategy_name,
             "--strategy-path", str(strategy_dir),
             "--datadir", str(data_path),
-            "--userdir", str(user_path),
+            "--userdir", str(run_root),
             "--timeframe", request.timeframe,
             "--export", "trades",
             "--export-filename", str(export_file),
@@ -329,20 +338,17 @@ def run_backtest(
             progress("running freqtrade backtesting")
 
         started = datetime.now(timezone.utc)
-        # Recorded before launching so _locate_export can reject artifacts left
-        # behind by an earlier run.
-        watermark = started.timestamp() - 1
         code, output = _run(backtest_cmd, cwd=workdir, timeout=timeout_seconds)
         duration = (datetime.now(timezone.utc) - started).total_seconds()
 
         if code != 0:
             raise BacktestError(_explain_failure(output, request))
 
-        result_path = _locate_export(export_file, newer_than=watermark)
+        result_path = _locate_export(results_dir)
         if result_path is None:
             raise BacktestError(
                 "freqtrade reported success but wrote no result file into "
-                f"{export_file.parent}."
+                f"{results_dir}."
             )
 
         export = BacktestExport.from_path(result_path)
@@ -356,35 +362,29 @@ def run_backtest(
         )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        # The export has already been read into memory by this point.
+        shutil.rmtree(run_root, ignore_errors=True)
 
 
-def _locate_export(expected: Path, *, newer_than: float) -> Path | None:
+def _locate_export(results_dir: Path) -> Path | None:
     """Find the export freqtrade actually wrote.
 
     2026.x ignores the name given to --export-filename and writes its own
-    `backtest-result-<timestamp>.zip` into the results directory, so looking for
-    the requested path finds nothing. Take the newest artifact produced by this
-    run instead, preferring a zip, and ignore anything predating the run so a
-    failed backtest cannot silently return an earlier run's numbers.
+    `backtest-result-<timestamp>.zip`, so looking for the requested path finds
+    nothing. The directory belongs to this run alone, so whatever is in it is
+    ours -- no timestamp comparison needed to tell runs apart.
     """
-    directory = expected.parent
-    if not directory.exists():
+    if not results_dir.exists():
         return None
 
-    def fresh(paths: list[Path]) -> list[Path]:
-        return [p for p in paths if p.stat().st_mtime >= newer_than]
-
-    zips = fresh(list(directory.glob("*.zip")))
+    zips = list(results_dir.glob("*.zip"))
     if zips:
         return max(zips, key=lambda p: p.stat().st_mtime)
 
-    if expected.exists() and expected.stat().st_mtime >= newer_than:
-        return expected
-
-    jsons = fresh([
-        p for p in directory.glob("*.json")
+    jsons = [
+        p for p in results_dir.glob("*.json")
         if not p.name.endswith(".meta.json") and not p.name.startswith(".")
-    ])
+    ]
     if jsons:
         return max(jsons, key=lambda p: p.stat().st_mtime)
     return None

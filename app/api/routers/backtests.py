@@ -177,5 +177,15 @@ async def cancel_job(job_id: str, db: UserDB) -> None:
         raise HTTPException(status_code=404, detail="no such job")
     if job["status"] in ("completed", "failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"job is already {job['status']}")
-    # A running job's worker will notice on its next heartbeat write.
+    if job["status"] == "running":
+        # Nothing here can stop a freqtrade process that has already started, and
+        # marking the row cancelled while the worker keeps going would leave the
+        # status lying. Say so rather than pretending.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this backtest is already running and cannot be stopped part-way. "
+                "It will finish on its own; its results still land normally."
+            ),
+        )
     db.update("backtest_jobs", {"status": "cancelled"}, filters={"id": f"eq.{job_id}"})
