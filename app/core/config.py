@@ -94,6 +94,9 @@ class BotConfig:
     api_base_url: str | None
     deploy_target: str
     environment: str
+    # Whether to pin the schema via the connection URL. Off by default: through
+    # a pooler the role default is the only form that survives.
+    search_path_in_url: bool
 
     def __post_init__(self) -> None:
         import re
@@ -127,16 +130,47 @@ class Settings:
 
     @property
     def freqtrade_db_url(self) -> str | None:
-        """The SQLAlchemy URL freqtrade should use, with search_path applied.
+        """The SQLAlchemy URL freqtrade should use.
 
         Returns None when no Postgres is configured, which is the signal to fall
         back to freqtrade's own SQLite default so local development and the
         existing deployment keep working untouched.
+
+        The search path is NOT put in the URL by default. Passing it as an
+        `options=-c search_path=...` startup parameter works against a direct
+        Postgres connection but does not survive Supabase's pooler: the bot
+        connected fine and then failed every unqualified `INSERT INTO trades`
+        with a schema name that was never configured. The reliable place for it
+        is a server-side role default:
+
+            alter role ft_bot set search_path = ft_main, public;
+
+        Set FREQTRADE_DB_SEARCH_PATH_IN_URL=true to go back to the URL form,
+        which is still correct when connecting directly rather than through a
+        pooler.
         """
         base = self.supabase.db_url
         if not base:
             return None
-        return with_search_path(base, self.bot.db_schema)
+        if self.bot.search_path_in_url:
+            return with_search_path(base, self.bot.db_schema)
+        return normalise_db_url(base)
+
+
+def normalise_db_url(db_url: str) -> str:
+    """Force an explicit driver so SQLAlchemy cannot pick a different one.
+
+    A bare `postgresql://` lets SQLAlchemy choose whatever DBAPI it finds. Being
+    explicit means a missing psycopg2 fails loudly at startup rather than
+    silently binding to something else.
+    """
+    parts = urlparse(db_url)
+    if not parts.scheme.startswith("postgres"):
+        return db_url
+    scheme = parts.scheme
+    if scheme in {"postgres", "postgresql"}:
+        scheme = "postgresql+psycopg2"
+    return urlunparse(parts._replace(scheme=scheme))
 
 
 def with_search_path(db_url: str, schema: str) -> str:
@@ -198,6 +232,7 @@ def get_settings() -> Settings:
         api_base_url=_env("FREQTRADE_API_BASE_URL"),
         deploy_target=_env("DEPLOY_TARGET", "render") or "render",
         environment=_env("ENVIRONMENT", "production") or "production",
+        search_path_in_url=_env_bool("FREQTRADE_DB_SEARCH_PATH_IN_URL", False),
     )
 
     worker = WorkerConfig(

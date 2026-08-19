@@ -160,9 +160,83 @@ try:
 except Exception as exc:
     print(f"WARNING: could not read platform settings ({exc}); using SQLite", flush=True)
 
+def verify_database(url, expected_schema):
+    """Connect once and confirm the session lands in the right schema.
+
+    Freqtrade writes unqualified SQL -- `INSERT INTO trades` -- so the schema is
+    decided entirely by search_path. Getting that wrong does not fail at
+    startup; it fails on the first trade, which is a bad time to find out.
+    Checking here turns a silent misconfiguration into a refusal to start.
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        print("psycopg2 not installed; cannot verify the database", flush=True)
+        return False
+
+    # psycopg2 wants a plain postgresql:// url, not SQLAlchemy's driver form.
+    raw = url.replace("postgresql+psycopg2://", "postgresql://", 1)
+    try:
+        conn = psycopg2.connect(raw, connect_timeout=20)
+    except Exception as exc:
+        detail = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+        print(f"DATABASE ERROR: {detail}", flush=True)
+        if "ENOTFOUND" in detail or "Tenant or user not found" in detail:
+            print(
+                "  The pooler does not recognise that user. Supabase's pooler expects "
+                "<role>.<project-ref> as the username, and the host must be the pooler "
+                "shown in Settings -> Database -> Connection string -> Session pooler.",
+                flush=True,
+            )
+        elif "timeout" in detail.lower():
+            print(
+                "  Connection timed out. The direct host db.<ref>.supabase.co is "
+                "IPv6-only and unreachable from Render; use the session pooler host.",
+                flush=True,
+            )
+        return False
+
+    try:
+        cur = conn.cursor()
+        cur.execute("show search_path")
+        search_path = cur.fetchone()[0]
+        cur.execute("select current_user, current_database()")
+        user, database = cur.fetchone()
+        print(f"database: connected as {user} to {database}", flush=True)
+        print(f"database: search_path = {search_path}", flush=True)
+
+        if expected_schema not in [p.strip().strip('\"') for p in search_path.split(",")]:
+            print(
+                f"DATABASE ERROR: search_path is {search_path!r} but freqtrade's tables "
+                f"belong in {expected_schema!r}. Its SQL is unqualified, so it would "
+                f"create and read tables in the wrong schema.\n"
+                f"  Fix with:  alter role {user} set search_path = {expected_schema}, public;",
+                flush=True,
+            )
+            return False
+
+        cur.execute("select to_regclass(%s)", (f"{expected_schema}.trades",))
+        existing = cur.fetchone()[0]
+        print(
+            f"database: {expected_schema}.trades "
+            + ("found" if existing else "not created yet (freqtrade will create it)"),
+            flush=True,
+        )
+        return True
+    finally:
+        conn.close()
+
+
 if db_url:
     # Never print the URL; it carries the database password.
     print(f"persistence: postgres, schema {db_schema}", flush=True)
+    if not verify_database(db_url, db_schema):
+        print(
+            "Refusing to start against a database that is not set up correctly. "
+            "Trading with the wrong schema loses trade history silently.",
+            flush=True,
+        )
+        sys.exit(1)
 else:
     print("persistence: SQLite (ephemeral -- set SUPABASE_DB_URL to keep history)", flush=True)
 

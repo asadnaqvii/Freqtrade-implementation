@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import ConfigError, with_search_path
+from app.core.config import ConfigError, normalise_db_url, with_search_path
 from app.core.security import fingerprint_secret, redact
 from app.providers.credentials import CredentialError, _read
 
@@ -86,3 +86,44 @@ def test_proper_env_var_names_resolve(monkeypatch):
     monkeypatch.setenv("MY_TEST_KEY", "value")
     assert _read("MY_TEST_KEY") == "value"
     assert _read("MY_UNSET_KEY") is None
+
+
+# ---------------------------------------------------------------------------
+# The search path belongs on the role, not in the URL
+# ---------------------------------------------------------------------------
+
+def test_normalise_pins_the_driver_without_touching_the_query():
+    url = normalise_db_url("postgresql://u:p@h:5432/db")
+    assert url.startswith("postgresql+psycopg2://")
+    # No options parameter: through a pooler it does not survive, and the bot
+    # then writes to whatever schema the mangled value names.
+    assert "options" not in url
+    assert "search_path" not in url
+
+
+def test_normalise_leaves_sqlite_alone():
+    assert normalise_db_url("sqlite:///x.sqlite") == "sqlite:///x.sqlite"
+
+
+def test_freqtrade_url_omits_search_path_by_default(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://u:p@h:5432/db")
+    monkeypatch.delenv("FREQTRADE_DB_SEARCH_PATH_IN_URL", raising=False)
+    get_settings.cache_clear()
+    url = get_settings().freqtrade_db_url
+    get_settings.cache_clear()
+    assert "search_path" not in url
+
+
+def test_search_path_can_still_be_forced_into_the_url(monkeypatch):
+    """Still correct for a direct connection, which is why it remains available."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://u:p@h:5432/db")
+    monkeypatch.setenv("FREQTRADE_DB_SEARCH_PATH_IN_URL", "true")
+    monkeypatch.setenv("FREQTRADE_DB_SCHEMA", "ft_main")
+    get_settings.cache_clear()
+    url = get_settings().freqtrade_db_url
+    get_settings.cache_clear()
+    assert "search_path" in url
