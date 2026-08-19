@@ -163,6 +163,11 @@
   .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
   .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
 
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .chips .btn.active {
+    background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600;
+  }
+
   .ranklist { display:flex; flex-direction:column; gap:8px; }
   .rank { display:grid; grid-template-columns:1fr auto; gap:4px 10px; font-size:12.5px; }
   .rank .nm { font-weight:550; }
@@ -278,8 +283,26 @@
       </div>
       <div class="row">
         <div><label for="bt-pairs">Pairs (comma separated)</label><input id="bt-pairs" value="BTC/USDT, ETH/USDT"></div>
-        <div><label for="bt-range">Timerange</label><input id="bt-range" placeholder="20240101-20241231"></div>
         <div><label for="bt-stakecur">Quote currency</label><input id="bt-stakecur" value="USDT"></div>
+      </div>
+      <div class="row">
+        <div><label for="bt-from">From</label><input id="bt-from" type="date"></div>
+        <div><label for="bt-to">To</label><input id="bt-to" type="date"></div>
+        <div>
+          <label>Or pick a span</label>
+          <div class="chips" id="bt-presets">
+            <button class="btn tiny" data-years="1">1 year</button>
+            <button class="btn tiny" data-years="2">2 years</button>
+            <button class="btn tiny" data-years="3">3 years</button>
+            <button class="btn tiny" data-years="5">5 years</button>
+            <button class="btn tiny" data-years="10">10 years</button>
+            <button class="btn tiny" data-years="0">Everything</button>
+          </div>
+        </div>
+      </div>
+      <div class="actions" style="margin-top:6px">
+        <button class="btn" id="bt-history">How far back can these pairs go?</button>
+        <span class="muted" id="bt-history-out" style="font-size:12.5px;align-self:center"></span>
       </div>
       <div class="row">
         <div><label for="bt-balance">Starting balance</label><input id="bt-balance" type="number" value="1000"></div>
@@ -295,6 +318,35 @@
         <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
       </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
     </div>
+    <div class="card" id="bt-detail" hidden>
+      <h2>Result detail</h2>
+      <p class="hint" id="bt-detail-title"></p>
+
+      <h3 style="margin:6px 0 8px;font-size:13px">Is this result worth believing?</h3>
+      <p class="hint">Separate question from whether it made money. A backtest always
+        produces a number; this says whether the test was capable of telling you anything.</p>
+      <div id="bt-verdict"><div class="empty">Pick a result below</div></div>
+
+      <h3 style="margin:22px 0 8px;font-size:13px">Return by period</h3>
+      <div class="chips" id="bt-period">
+        <button class="btn tiny" data-period="day">Daily</button>
+        <button class="btn tiny" data-period="week">Weekly</button>
+        <button class="btn tiny active" data-period="month">Monthly</button>
+        <button class="btn tiny" data-period="quarter">Quarterly</button>
+        <button class="btn tiny" data-period="year">Annual</button>
+      </div>
+      <div id="bt-period-summary"></div>
+      <div id="bt-period-chart"></div>
+      <div class="scroll" style="margin-top:12px"><table><thead><tr>
+        <th>Period</th><th class="r">Trades</th><th class="r">W/L</th>
+        <th class="r">Profit</th><th class="r">Return on account</th>
+        <th class="r">Invested</th><th class="r">Return on capital</th>
+        <th class="r">Balance</th>
+      </tr></thead><tbody id="bt-period-rows">
+        <tr><td colspan="8" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+    </div>
+
     <div class="card">
       <h2>Results</h2>
       <div class="scroll"><table><thead><tr>
@@ -661,7 +713,7 @@ $("bt-run").onclick = async () => {
     exchange: $("bt-exchange").value.trim(),
     timeframe: $("bt-tf").value,
     pairs: $("bt-pairs").value.split(",").map(p => p.trim().toUpperCase()).filter(Boolean),
-    timerange: $("bt-range").value.trim() || null,
+    timerange: selectedTimerange(),
     stake_currency: $("bt-stakecur").value.trim().toUpperCase(),
     stake_amount: Number($("bt-stake").value) || null,
     starting_balance: Number($("bt-balance").value),
@@ -694,8 +746,8 @@ async function loadJobs() {
 
 async function loadRuns() {
   const { runs } = await api("/api/backtests");
-  $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr>
-      <td>${esc(r.strategy_name)}</td>
+  $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr data-run="${esc(r.id)}" style="cursor:pointer">
+      <td><strong>${esc(r.strategy_name)}</strong></td>
       <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}</td>
       <td class="num">${r.total_trades}</td>
       <td class="num">${fmtPct((r.win_rate || 0) * 100, 1)}</td>
@@ -705,6 +757,13 @@ async function loadRuns() {
       <td class="muted">${esc(r.best_pair || "—")}</td>
       <td class="muted">${esc(r.worst_pair || "—")}</td></tr>`).join("")
     : '<tr><td colspan="9" class="empty">No results yet</td></tr>';
+
+  document.querySelectorAll("[data-run]").forEach(row => row.onclick = () => {
+    const r = runs.find(x => x.id === row.dataset.run);
+    openRun(row.dataset.run,
+            `${r.strategy_name} · ${(r.pairs || []).join(", ")} · ${r.timeframe} · ` +
+            `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`);
+  });
 }
 
 // ── wallets ─────────────────────────────────────────────────
@@ -1039,6 +1098,168 @@ async function loadLiveExtras(stake) {
     $("bot-log").textContent = lines.join("\n") || "Nothing logged yet";
     $("bot-log").classList.remove("muted");
   } catch (e) { $("bot-log").textContent = `Log unavailable: ${e.message}`; }
+}
+
+// ── backtest: window, breakdown, and whether to believe it ──
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const compact = (d) => d.replaceAll("-", "");
+
+// freqtrade wants YYYYMMDD-YYYYMMDD; people want a date picker. Compose one from
+// the other rather than making anyone type the format.
+function selectedTimerange() {
+  const from = $("bt-from").value, to = $("bt-to").value;
+  if (!from && !to) return null;
+  return `${from ? compact(from) : ""}-${to ? compact(to) : ""}`;
+}
+
+document.querySelectorAll("#bt-presets [data-years]").forEach(b => b.onclick = () => {
+  const years = Number(b.dataset.years);
+  const end = new Date();
+  if (!years) {
+    // "Everything" leaves the start open so freqtrade takes whatever the venue
+    // has, rather than us guessing a date the exchange may not reach.
+    $("bt-from").value = ""; $("bt-to").value = isoDay(end);
+  } else {
+    const start = new Date(end);
+    start.setFullYear(start.getFullYear() - years);
+    $("bt-from").value = isoDay(start);
+    $("bt-to").value = isoDay(end);
+  }
+  $("bt-history-out").textContent = "";
+});
+
+$("bt-history").onclick = async () => {
+  const pairs = $("bt-pairs").value.trim();
+  if (!pairs) return toast("Name at least one pair first.", true);
+  const out = $("bt-history-out");
+  out.textContent = "Asking the exchange…";
+  try {
+    const q = new URLSearchParams({ exchange: $("bt-exchange").value.trim() || "kucoin",
+                                    pairs, timeframe: "1d" });
+    const r = await api(`/api/catalog/history?${q}`);
+    const parts = r.pairs.map(p => p.error
+      ? `${p.pair}: unavailable`
+      : `${p.pair}: back to ${String(p.earliest).slice(0, 10)} (${p.years}y)`);
+    out.textContent = parts.join("  ·  ");
+    // The shortest history is the binding one -- a backtest spans the pairs
+    // together, so it cannot start before the youngest pair listed.
+    if (r.common_start) $("bt-from").value = String(r.common_start).slice(0, 10);
+  } catch (e) { out.textContent = e.message; }
+};
+
+let currentRun = null, currentPeriod = "month";
+
+document.querySelectorAll("#bt-period [data-period]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#bt-period [data-period]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  currentPeriod = b.dataset.period;
+  if (currentRun) loadBreakdown(currentRun);
+});
+
+function verdictPill(v) {
+  return { good: "ok", weak: "warn", bad: "bad" }[v] || "neutral";
+}
+
+async function openRun(runId, title) {
+  currentRun = runId;
+  $("bt-detail").hidden = false;
+  $("bt-detail-title").textContent = title;
+  $("bt-verdict").innerHTML = '<div class="empty">Checking…</div>';
+  $("bt-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+
+  try {
+    const v = await api(`/api/backtests/${runId}/verdict`);
+    const order = { bad: 0, weak: 1, good: 2 };
+    const findings = v.findings.slice().sort((a, b) => order[a.verdict] - order[b.verdict]);
+    $("bt-verdict").innerHTML = `
+      <p style="margin:0 0 12px"><span class="pill ${verdictPill(v.counts.bad ? "bad" : v.counts.weak ? "weak" : "good")}">${esc(v.headline)}</span>
+        <span class="muted" style="margin-left:8px;font-size:12.5px">${v.counts.bad} serious ·
+        ${v.counts.weak} caveats · ${v.counts.good} fine</span></p>` +
+      findings.map(f => `
+        <div class="check ${f.verdict === "bad" ? "failed" : f.verdict === "weak" ? "warning" : "passed"}">
+          <div class="t">${esc(f.title)} <span class="pill ${verdictPill(f.verdict)}">${esc(f.verdict)}</span></div>
+          <div class="m">${esc(f.message)}</div>
+          ${f.detail ? `<div class="r">${esc(f.detail)}</div>` : ""}
+        </div>`).join("");
+  } catch (e) { $("bt-verdict").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
+  loadBreakdown(runId);
+}
+
+// Bars are per-period profit; the line is the account balance across them. Same
+// hand-built SVG approach as the live chart, for the same reason.
+function periodChart(rows, currency) {
+  if (!rows.length) return "";
+  const W = 780, H = 170, PADL = 54, PADT = 10, PADB = 26;
+  const vals = rows.map(r => r.profit_abs || 0);
+  const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  const span = (hi - lo) || 1;
+  const y = (v) => PADT + (hi - v) / span * (H - PADT - PADB);
+  const step = (W - PADL - 8) / rows.length;
+  const bw = Math.max(2, step - 3);
+  const x = (i) => PADL + i * step + 1.5;
+
+  const bars = rows.map((r, i) => {
+    const v = vals[i], top = y(Math.max(0, v)), h = Math.abs(y(v) - y(0));
+    return `<rect x="${x(i).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}"
+      height="${Math.max(1, h).toFixed(1)}" rx="1.5" fill="var(--${v >= 0 ? "pos" : "neg"})" opacity=".6">
+      <title>${esc(r.label)}  ${v >= 0 ? "+" : ""}${fmtNum(v)} ${esc(currency || "")} · ${r.trades} trades${
+        r.profit_pct != null ? ` · ${fmtNum(r.profit_pct)}% of account` : ""}</title></rect>`;
+  }).join("");
+
+  const ticks = [hi, (hi + lo) / 2, lo].map(v =>
+    `<line class="gl" x1="${PADL}" y1="${y(v).toFixed(1)}" x2="${W - 8}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${PADL - 7}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${fmtNum(v, 0)}</text>`
+  ).join("");
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 14}" role="img"
+      aria-label="Profit per period across ${rows.length} periods">
+    ${ticks}
+    <line class="zero" x1="${PADL}" y1="${y(0).toFixed(1)}" x2="${W - 8}" y2="${y(0).toFixed(1)}"/>
+    ${bars}
+    <text class="lbl" x="${PADL}" y="${H + 7}">${esc(rows[0].label)}</text>
+    <text class="lbl" x="${W - 8}" y="${H + 7}" text-anchor="end">${esc(rows[rows.length - 1].label)}</text>
+  </svg>`;
+}
+
+async function loadBreakdown(runId) {
+  try {
+    const b = await api(`/api/backtests/${runId}/breakdown?period=${currentPeriod}`);
+    const cur = b.stake_currency || "";
+    const s = b.summary || {};
+
+    $("bt-period-summary").innerHTML = !s.periods ? "" : `
+      <div class="kpis" style="margin:10px 0 14px">
+        <div class="kpi"><div class="k">Periods up</div>
+          <div class="v">${s.up}/${s.periods}</div><div class="s">${fmtNum(s.hit_rate, 0)}% positive</div></div>
+        <div class="kpi"><div class="k">Worst streak</div>
+          <div class="v ${s.longest_losing_streak > 2 ? "neg" : ""}">${s.longest_losing_streak}</div>
+          <div class="s">losing ${currentPeriod}s in a row</div></div>
+        <div class="kpi"><div class="k">Best</div>
+          <div class="v pos">${fmtNum(s.best?.profit_abs)}</div><div class="s">${esc(s.best?.label || "")}</div></div>
+        <div class="kpi"><div class="k">Worst</div>
+          <div class="v neg">${fmtNum(s.worst?.profit_abs)}</div><div class="s">${esc(s.worst?.label || "")}</div></div>
+        <div class="kpi"><div class="k">Return on capital</div>
+          <div class="v ${(s.return_on_capital_pct || 0) >= 0 ? "pos" : "neg"}">${fmtNum(s.return_on_capital_pct, 1)}%</div>
+          <div class="s">profit ÷ ${fmtNum(s.total_staked, 0)} ${esc(cur)} invested</div></div>
+      </div>`;
+
+    $("bt-period-chart").innerHTML = periodChart(b.rows, cur);
+
+    $("bt-period-rows").innerHTML = b.rows.length ? b.rows.map(r => `<tr>
+        <td><strong>${esc(r.label)}</strong></td>
+        <td class="r num">${r.trades}</td>
+        <td class="r num muted">${r.wins}/${r.losses}</td>
+        <td class="r num">${signed(r.profit_abs, (r.profit_abs >= 0 ? "+" : "") + fmtNum(r.profit_abs))}</td>
+        <td class="r num">${r.profit_pct == null ? "—" : signed(r.profit_pct, fmtNum(r.profit_pct) + "%")}</td>
+        <td class="r num muted">${fmtNum(r.staked, 0)}</td>
+        <td class="r num">${r.return_on_capital_pct == null ? "—" : signed(r.return_on_capital_pct, fmtNum(r.return_on_capital_pct) + "%")}</td>
+        <td class="r num muted">${r.closing_balance == null ? "—" : fmtNum(r.closing_balance, 0)}</td>
+      </tr>`).join("")
+      : '<tr><td colspan="8" class="empty">No closed trades in this run</td></tr>';
+  } catch (e) {
+    $("bt-period-rows").innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+  }
 }
 
 async function refreshAll() {
