@@ -84,7 +84,9 @@ def create_app() -> FastAPI:
         log.error("configuration problem: %s", exc)
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-    from app.api.routers import accounts, backtests, bots, catalog, health, strategies
+    from app.api.routers import (
+        accounts, backtests, bots, catalog, health, live, strategies,
+    )
 
     app.include_router(health.router)
     app.include_router(catalog.router)
@@ -92,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(backtests.router)
     app.include_router(accounts.router)
     app.include_router(bots.router)
+    app.include_router(live.router)
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

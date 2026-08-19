@@ -5,75 +5,194 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Freqtrade Platform</title>
 <style>
+  /* Instrument-panel palette: a near-black blue slate ground, one amber accent
+     for anything interactive, and profit/loss colours that are deliberately NOT
+     the accent -- if green means both "button" and "up", every number reads as a
+     control. Light is the complete set; dark redefines tokens only. */
   :root {
-    --bg:#0e1116; --panel:#161b22; --panel-2:#1c232c; --line:#2a323d;
-    --text:#e6edf3; --muted:#8b949e; --accent:#3fb950; --accent-dim:#238636;
-    --warn:#d29922; --bad:#f85149; --info:#58a6ff; --radius:10px;
+    --bg:#F4F6F9; --panel:#FFFFFF; --panel-2:#EDF1F6; --panel-3:#E3E9F0;
+    --line:#DBE2EA; --line-soft:#E9EEF3;
+    --text:#111A23; --text-2:#3C4956; --muted:#5F6E7D;
+    --accent:#9A6B14; --accent-2:#8A5F10; --accent-soft:#9A6B1418;
+    --pos:#1B7A4B; --neg:#B23E33; --warn:#8A6512; --info:#2C6C9E;
+    --pos-soft:#1B7A4B18; --neg-soft:#B23E3318; --warn-soft:#8A651218; --info-soft:#2C6C9E18;
+    --radius:11px; --radius-sm:7px;
+    --shadow:0 1px 2px rgba(17,26,35,.05), 0 8px 24px rgba(17,26,35,.06);
+    --grid:#DBE2EA;
   }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f6f8fa; --panel:#fff; --panel-2:#f0f3f6; --line:#d0d7de;
-            --text:#1f2328; --muted:#636c76; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0A0E13; --panel:#121821; --panel-2:#19212B; --panel-3:#212B36;
+      --line:#242E3A; --line-soft:#1C242E;
+      --text:#DFE7EF; --text-2:#B2C0CD; --muted:#78879A;
+      --accent:#D9A441; --accent-2:#E8B860; --accent-soft:#D9A4411F;
+      --pos:#3FAE72; --neg:#D2564B; --warn:#D9A441; --info:#5B96C7;
+      --pos-soft:#3FAE721F; --neg-soft:#D2564B1F; --warn-soft:#D9A4411F; --info-soft:#5B96C71F;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.28);
+      --grid:#212B36;
+    }
   }
+
   * { box-sizing:border-box; }
-  body { margin:0; font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-         background:var(--bg); color:var(--text); }
-  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
-           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:10; }
-  header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.2px; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono, .num, pre, code { font-family:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace; }
+  .num { font-variant-numeric:tabular-nums; }
+
+  header {
+    display:flex; align-items:center; gap:14px; padding:13px 22px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+    position:sticky; top:0; z-index:20;
+  }
+  header h1 {
+    font-size:14px; margin:0; font-weight:650; letter-spacing:-.01em;
+    display:flex; align-items:center; gap:9px;
+  }
+  header h1::before {
+    content:""; width:9px; height:9px; border-radius:2px; background:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-soft);
+  }
   header .spacer { flex:1; }
-  nav { display:flex; gap:4px; padding:0 22px; border-bottom:1px solid var(--line); background:var(--panel); }
-  nav button { background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
-               padding:11px 14px; cursor:pointer; font-size:13px; font-weight:500; }
+
+  nav {
+    display:flex; gap:2px; padding:0 22px; border-bottom:1px solid var(--line);
+    background:var(--panel); position:sticky; top:51px; z-index:19; overflow-x:auto;
+  }
+  nav button {
+    background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
+    padding:11px 14px; cursor:pointer; font-size:13px; font-weight:550; white-space:nowrap;
+  }
+  nav button:hover { color:var(--text); }
   nav button.active { color:var(--text); border-bottom-color:var(--accent); }
-  main { padding:22px; max-width:1180px; margin:0 auto; }
+
+  main { padding:22px; max-width:1320px; margin:0 auto; }
   section { display:none; } section.active { display:block; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-          padding:18px; margin-bottom:16px; }
-  .card h2 { margin:0 0 4px; font-size:14px; font-weight:600; }
+
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:18px; margin-bottom:16px; box-shadow:var(--shadow);
+  }
+  .card h2 {
+    margin:0 0 4px; font-size:12px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--muted);
+  }
   .card p.hint { margin:0 0 14px; color:var(--muted); font-size:12.5px; }
-  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; font-weight:500; }
+  .card h2 + .scroll, .card h2 + table { margin-top:12px; }
+
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; font-weight:550; }
   input, select, textarea, button.btn {
     width:100%; padding:8px 10px; background:var(--panel-2); color:var(--text);
-    border:1px solid var(--line); border-radius:7px; font:inherit; font-size:13px; }
+    border:1px solid var(--line); border-radius:var(--radius-sm); font:inherit; font-size:13px;
+  }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:1px;
+  }
   textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; min-height:150px; }
-  button.btn { cursor:pointer; width:auto; }
-  button.primary { background:var(--accent-dim); border-color:var(--accent-dim); color:#fff; font-weight:600; }
-  button.primary:hover { background:var(--accent); }
-  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  button.btn { cursor:pointer; width:auto; font-weight:550; transition:background .12s, border-color .12s; }
+  button.btn:hover:not(:disabled) { background:var(--panel-3); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#1A1206; }
+  button.primary:hover:not(:disabled) { background:var(--accent-2); border-color:var(--accent-2); }
+  button.danger { border-color:var(--neg); color:var(--neg); background:var(--neg-soft); }
+  button.danger:hover:not(:disabled) { background:var(--neg); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.tiny { padding:4px 9px; font-size:11.5px; }
+
   .row { display:flex; gap:12px; flex-wrap:wrap; }
   .row > * { flex:1; min-width:150px; }
   .actions { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  .grid3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:16px; }
+
   table { width:100%; border-collapse:collapse; font-size:12.5px; }
-  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
-  .scroll { overflow-x:auto; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; }
-  .ok{background:rgba(63,185,80,.16);color:var(--accent)}
-  .warn{background:rgba(210,153,34,.16);color:var(--warn)}
-  .bad{background:rgba(248,81,73,.16);color:var(--bad)}
-  .neutral{background:rgba(139,148,158,.16);color:var(--muted)}
-  .info{background:rgba(88,166,255,.16);color:var(--info)}
-  .num { font-variant-numeric:tabular-nums; }
-  .pos { color:var(--accent); } .neg { color:var(--bad); }
-  pre { background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:12px;
-        overflow:auto; font-size:11.5px; max-height:380px; margin:0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap; }
+  th {
+    color:var(--muted); font-weight:600; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.07em; background:var(--panel-2); position:sticky; top:0;
+  }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:hover td { background:var(--panel-2); }
+  td.r, th.r { text-align:right; }
+  .scroll { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius-sm); }
+
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; }
+  .ok{background:var(--pos-soft);color:var(--pos)}
+  .warn{background:var(--warn-soft);color:var(--warn)}
+  .bad{background:var(--neg-soft);color:var(--neg)}
+  .neutral{background:var(--panel-3);color:var(--muted)}
+  .info{background:var(--info-soft);color:var(--info)}
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+
+  /* ── live terminal ─────────────────────────────────────── */
+  .statusbar {
+    display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 16px;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    margin-bottom:16px; box-shadow:var(--shadow);
+  }
+  .statusbar .sb {
+    display:inline-flex; align-items:baseline; gap:7px; padding:4px 11px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:999px; font-size:12px;
+  }
+  .statusbar .sb b { font-weight:600; font-variant-numeric:tabular-nums; }
+  .statusbar .sb span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; flex:none; }
+  .dot.up{background:var(--pos);box-shadow:0 0 0 3px var(--pos-soft)}
+  .dot.down{background:var(--neg);box-shadow:0 0 0 3px var(--neg-soft)}
+  .dot.idle{background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:12px; margin-bottom:16px; }
+  .kpi {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px 16px; box-shadow:var(--shadow); min-width:0;
+  }
+  .kpi .k {
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+    font-weight:600; margin-bottom:5px;
+  }
+  .kpi .v { font-size:23px; font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums;
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .kpi .s { font-size:11.5px; color:var(--muted); margin-top:3px; font-variant-numeric:tabular-nums; }
+
+  .bar { height:6px; border-radius:3px; background:var(--panel-3); overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; border-radius:3px; background:var(--accent); }
+
+  .chart { width:100%; height:auto; display:block; overflow:visible; }
+  .chart .gl { stroke:var(--grid); stroke-width:1; }
+  .chart .lbl { fill:var(--muted); font-size:9.5px; font-family:ui-monospace,monospace; }
+  .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
+  .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
+
+  .ranklist { display:flex; flex-direction:column; gap:8px; }
+  .rank { display:grid; grid-template-columns:1fr auto; gap:4px 10px; font-size:12.5px; }
+  .rank .nm { font-weight:550; }
+  .rank .vl { font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; }
+  .rank .track { grid-column:1/-1; height:5px; border-radius:3px; background:var(--panel-3); overflow:hidden; }
+  .rank .track > i { display:block; height:100%; border-radius:3px; }
+
   .check { border-left:3px solid var(--line); padding:9px 12px; margin-bottom:8px;
-           background:var(--panel-2); border-radius:0 7px 7px 0; }
-  .check.passed{border-left-color:var(--accent)} .check.failed,.check.error{border-left-color:var(--bad)}
+           background:var(--panel-2); border-radius:0 var(--radius-sm) var(--radius-sm) 0; }
+  .check.passed{border-left-color:var(--pos)} .check.failed,.check.error{border-left-color:var(--neg)}
   .check.warning{border-left-color:var(--warn)} .check.skipped{border-left-color:var(--muted)}
   .check .t { font-weight:600; font-size:12.5px; }
   .check .m { color:var(--muted); font-size:12px; margin-top:2px; }
   .check .r { margin-top:6px; font-size:12px; padding:7px 9px; background:var(--bg);
               border-radius:6px; border:1px solid var(--line); }
+
+  pre { background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius-sm);
+        padding:12px; overflow:auto; font-size:11.5px; max-height:380px; margin:0; }
   .muted { color:var(--muted); }
   .empty { color:var(--muted); padding:22px; text-align:center; font-size:13px; }
-  #toast { position:fixed; right:18px; bottom:18px; background:var(--panel); border:1px solid var(--line);
-           border-left:3px solid var(--accent); padding:11px 15px; border-radius:8px; max-width:420px;
-           display:none; box-shadow:0 8px 28px rgba(0,0,0,.35); font-size:13px; z-index:100; }
-  #toast.bad { border-left-color:var(--bad); }
-  #auth { max-width:380px; margin:70px auto; }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:12.5px; }
   .kv dt { color:var(--muted); } .kv dd { margin:0; font-variant-numeric:tabular-nums; }
+
+  #toast { position:fixed; right:18px; bottom:18px; background:var(--panel); border:1px solid var(--line);
+           border-left:3px solid var(--accent); padding:11px 15px; border-radius:var(--radius-sm);
+           max-width:420px; display:none; box-shadow:var(--shadow); font-size:13px; z-index:100; }
+  #toast.bad { border-left-color:var(--neg); }
+  #auth { max-width:380px; margin:70px auto; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
 <body>
@@ -214,22 +333,85 @@
     </div>
   </section>
 
-  <!-- ── Bots ──────────────────────────────────────────────── -->
+  <!-- ── Live bot ──────────────────────────────────────────── -->
   <section id="bots">
+    <div class="card" id="live-down" hidden>
+      <h2>Bot unreachable</h2>
+      <p class="hint" id="live-down-why"></p>
+      <p class="hint">Everything below is the last state stored in the database. The bot is a
+        private service, so a deploy or restart makes it briefly unreachable; this usually
+        clears on its own within a minute.</p>
+    </div>
+
+    <div class="statusbar" id="live-status"></div>
+    <div class="kpis" id="live-kpis"></div>
+
     <div class="card">
-      <h2>Bots</h2>
-      <p class="hint">The trading bot runs as a private service with no public ingress. Its state
-        reaches you through the shared database, not by exposing the bot.</p>
+      <h2>Open positions</h2>
+      <p class="hint">Priced live from the exchange. Profit here moves with the market &mdash;
+        it is what you would get closing right now, not what the position cost.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Opened</th><th>Held</th><th class="r">Stake</th><th class="r">Entry</th>
+        <th class="r">Now</th><th class="r">Profit</th><th class="r">%</th><th>Entry tag</th><th></th>
+      </tr></thead><tbody id="pos-rows">
+        <tr><td colspan="10" class="empty">Nothing open</td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Daily profit</h2>
+      <p class="hint">Each bar is one day's realised profit. The line is the running total.</p>
+      <div id="daily-chart"><div class="empty">No closed days yet</div></div>
+    </div>
+
+    <div class="grid3">
+      <div class="card">
+        <h2>Wallet</h2>
+        <p class="hint">What the exchange says you hold.</p>
+        <div class="scroll"><table><thead><tr>
+          <th>Coin</th><th class="r">Free</th><th class="r">In trades</th><th class="r">Total</th>
+        </tr></thead><tbody id="bal-rows">
+          <tr><td colspan="4" class="empty">&mdash;</td></tr>
+        </tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Profit by pair</h2>
+        <p class="hint">Which pairs actually made money.</p>
+        <div id="perf-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
+      </div>
+      <div class="card">
+        <h2>Why trades closed</h2>
+        <p class="hint">Mostly stop-loss means the strategy is being stopped out, not exiting.</p>
+        <div id="exit-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Closed trades</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Entry</th><th class="r">Exit</th>
+        <th class="r">Profit</th><th class="r">%</th><th>Reason</th>
+      </tr></thead><tbody id="closed-rows">
+        <tr><td colspan="8" class="empty">No closed trades</td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Registered bots</h2>
+      <p class="hint">From the database rather than the bot, so a bot that has stopped answering
+        still appears here &mdash; marked stale, which is the useful thing to know.</p>
       <div class="scroll"><table><thead><tr>
         <th>Name</th><th>Health</th><th>Exchange</th><th>Strategy</th><th>Mode</th>
-        <th>Open trades</th><th>Last seen</th>
-      </tr></thead><tbody id="bot-rows"><tr><td colspan="7" class="empty">No bots registered</td></tr></tbody></table></div>
+        <th class="r">Open</th><th>Last seen</th>
+      </tr></thead><tbody id="bot-rows">
+        <tr><td colspan="7" class="empty">No bots registered</td></tr>
+      </tbody></table></div>
     </div>
+
     <div class="card">
-      <h2>Live trades</h2>
-      <div class="scroll"><table><thead><tr>
-        <th>Pair</th><th>Open</th><th>Amount</th><th>Open rate</th><th>Close rate</th><th>Profit</th><th>Exit</th>
-      </tr></thead><tbody id="trade-rows"><tr><td colspan="7" class="empty">No trades</td></tr></tbody></table></div>
+      <h2>Bot log</h2>
+      <p class="hint">The last few hundred lines, straight from the running process.</p>
+      <pre id="bot-log" class="muted">Loading&hellip;</pre>
     </div>
   </section>
 </main>
@@ -615,12 +797,266 @@ async function loadBots() {
     : '<tr><td colspan="7" class="empty">No trades</td></tr>';
 }
 
+// ── live bot ────────────────────────────────────────────────
+// Everything here comes from the bot over Render's private network, because the
+// numbers only exist live: an open position's profit depends on the price right
+// now, and the database only records what the position cost.
+
+const held = (since) => {
+  if (!since) return "—";
+  let s = Math.max(0, (Date.now() - new Date(since).getTime()) / 1000);
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600);  s -= h * 3600;
+  const m = Math.floor(s / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+
+// A bar chart with a cumulative line over it. Hand-built rather than pulled from
+// a library: one chart does not justify a charting dependency on a page that is
+// otherwise dependency-free, and the CSP here allows no external scripts anyway.
+function dailyChart(rows, stake) {
+  if (!rows || !rows.length) return '<div class="empty">No closed days yet</div>';
+  const days = rows.slice().reverse();                       // oldest first
+  const W = 780, H = 190, PADL = 52, PADB = 28, PADT = 10;
+  const vals = days.map(d => Number(d.abs_profit) || 0);
+  let running = 0;
+  const cum = vals.map(v => (running += v));
+  const lo = Math.min(0, ...vals, ...cum), hi = Math.max(0, ...vals, ...cum);
+  const span = (hi - lo) || 1;
+  const y = (v) => PADT + (hi - v) / span * (H - PADT - PADB);
+  const bw = Math.max(2, (W - PADL - 8) / days.length - 3);
+  const x = (i) => PADL + i * ((W - PADL - 8) / days.length) + 1.5;
+
+  const bars = days.map((d, i) => {
+    const v = vals[i], top = y(Math.max(0, v)), h = Math.abs(y(v) - y(0));
+    const cls = v >= 0 ? "pos" : "neg";
+    return `<rect x="${x(i).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}"
+      height="${Math.max(1, h).toFixed(1)}" rx="1.5" fill="var(--${cls})" opacity=".55">
+      <title>${esc(d.date)}  ${v >= 0 ? "+" : ""}${fmtNum(v)} ${esc(stake || "")} · ${d.trade_count || 0} trades</title>
+    </rect>`;
+  }).join("");
+
+  const line = cum.map((v, i) => `${(x(i) + bw / 2).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const ticks = [hi, (hi + lo) / 2, lo].map(v =>
+    `<line class="gl" x1="${PADL}" y1="${y(v).toFixed(1)}" x2="${W - 8}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${PADL - 7}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${fmtNum(v, 1)}</text>`
+  ).join("");
+
+  const first = days[0]?.date || "", last = days[days.length - 1]?.date || "";
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 16}" role="img"
+      aria-label="Daily profit, ${days.length} days, running total ${fmtNum(cum[cum.length - 1])}">
+    ${ticks}
+    <line class="zero" x1="${PADL}" y1="${y(0).toFixed(1)}" x2="${W - 8}" y2="${y(0).toFixed(1)}"/>
+    ${bars}
+    <polyline class="ln" points="${line}"/>
+    <text class="lbl" x="${PADL}" y="${H + 8}">${esc(first)}</text>
+    <text class="lbl" x="${W - 8}" y="${H + 8}" text-anchor="end">${esc(last)}</text>
+  </svg>`;
+}
+
+function rankList(items, { label, value, weight, signed: isSigned = true }) {
+  if (!items || !items.length) return '<div class="empty">Nothing yet</div>';
+  const max = Math.max(...items.map(i => Math.abs(weight(i)))) || 1;
+  return items.map(i => {
+    const w = weight(i), pct = Math.abs(w) / max * 100;
+    const cls = !isSigned ? "" : w >= 0 ? "pos" : "neg";
+    const colour = !isSigned ? "var(--accent)" : `var(--${w >= 0 ? "pos" : "neg"})`;
+    return `<div class="rank">
+      <div class="nm">${esc(label(i))}</div>
+      <div class="vl ${cls}">${esc(value(i))}</div>
+      <div class="track"><i style="width:${pct.toFixed(1)}%;background:${colour}"></i></div>
+    </div>`;
+  }).join("");
+}
+
+function liveStatus(cfg, count, reachable) {
+  if (!cfg) {
+    return `<span class="sb"><i class="dot down"></i>&nbsp;<b>Unreachable</b></span>`;
+  }
+  const running = (cfg.state || "").toLowerCase() === "running";
+  const dot = !reachable ? "down" : running ? "up" : "idle";
+  const bits = [
+    `<span class="sb"><i class="dot ${dot}"></i>&nbsp;<b>${esc(cfg.state || "unknown")}</b></span>`,
+    `<span class="sb"><span>mode</span><b class="${cfg.dry_run ? "" : "neg"}">${cfg.dry_run ? "dry run" : "LIVE MONEY"}</b></span>`,
+    `<span class="sb"><span>exchange</span><b>${esc(cfg.exchange || "—")}</b></span>`,
+    `<span class="sb"><span>strategy</span><b>${esc(cfg.strategy || "—")}</b></span>`,
+    `<span class="sb"><span>timeframe</span><b>${esc(cfg.timeframe || "—")}</b></span>`,
+    `<span class="sb"><span>stake</span><b>${fmtNum(cfg.stake_amount)} ${esc(cfg.stake_currency || "")}</b></span>`,
+  ];
+  if (count) bits.push(`<span class="sb"><span>open</span><b>${count.current} / ${count.max}</b></span>`);
+  if (cfg.version) bits.push(`<span class="sb"><span>freqtrade</span><b>${esc(cfg.version)}</b></span>`);
+  return bits.join("");
+}
+
+function liveKpis(profit, balance, cfg) {
+  const stake = cfg?.stake_currency || "";
+  const card = (k, v, s, cls = "") =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v ${cls}">${v}</div>
+     <div class="s">${s || "&nbsp;"}</div></div>`;
+  if (!profit) return card("Profit", "—", "the bot did not answer");
+
+  const all = Number(profit.profit_all_coin) || 0;
+  const closed = Number(profit.profit_closed_coin) || 0;
+  const wins = profit.winning_trades ?? 0, losses = profit.losing_trades ?? 0;
+  const winrate = profit.winrate != null ? profit.winrate * 100 : null;
+
+  return [
+    card("Total P&amp;L", `${all >= 0 ? "+" : ""}${fmtNum(all)}`,
+         `${esc(stake)} · open and closed`, all >= 0 ? "pos" : "neg"),
+    card("Realised", `${closed >= 0 ? "+" : ""}${fmtNum(closed)}`,
+         `${profit.closed_trade_count ?? 0} closed trades`, closed >= 0 ? "pos" : "neg"),
+    card("Win rate", winrate == null ? "—" : `${winrate.toFixed(0)}%`,
+         `${wins} won · ${losses} lost`),
+    card("Profit factor", profit.profit_factor == null ? "—" : fmtNum(profit.profit_factor),
+         "gross win ÷ gross loss"),
+    card("Expectancy", profit.expectancy == null ? "—" : fmtNum(profit.expectancy),
+         `per trade, in ${esc(stake)}`,
+         (profit.expectancy || 0) >= 0 ? "pos" : "neg"),
+    card("Wallet", balance ? fmtNum(balance.total) : "—",
+         balance ? `${fmtNum(balance.total - (balance.starting_capital || 0))} vs start` : "&nbsp;"),
+    card("Best pair", esc(profit.best_pair || "—"),
+         profit.best_pair_profit_abs != null ? `${fmtNum(profit.best_pair_profit_abs)} ${esc(stake)}` : "&nbsp;"),
+    card("Avg hold", esc(profit.avg_duration || "—"), "per closed trade"),
+  ].join("");
+}
+
+async function loadLive() {
+  let o;
+  try {
+    o = await api("/api/live/overview");
+    $("live-down").hidden = true;
+  } catch (e) {
+    $("live-down").hidden = false;
+    $("live-down-why").textContent = String(e.message || e);
+    $("live-status").innerHTML = liveStatus(null, null, false);
+    o = { errors: {} };
+  }
+
+  const cfg = o.config, stake = cfg?.stake_currency || "";
+  const reachable = !!cfg;
+  $("live-status").innerHTML = liveStatus(cfg, o.count, reachable);
+  $("live-kpis").innerHTML = liveKpis(o.profit, o.balance, cfg);
+
+  // open positions
+  const open = Array.isArray(o.status) ? o.status : (o.status?.data || []);
+  $("pos-rows").innerHTML = open.length ? open.map(t => {
+    const abs = Number(t.profit_abs ?? 0), pct = Number(t.profit_pct ?? (t.profit_ratio * 100) ?? 0);
+    return `<tr>
+      <td><strong>${esc(t.pair)}</strong>${t.is_short ? ' <span class="pill bad">short</span>' : ""}</td>
+      <td class="muted">${shortDate(t.open_date)}</td>
+      <td class="muted">${held(t.open_date)}</td>
+      <td class="r num">${fmtNum(t.stake_amount)}</td>
+      <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+      <td class="r num">${fmtNum(t.current_rate, 6)}</td>
+      <td class="r num">${signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
+      <td class="r num">${signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
+      <td class="muted">${esc(t.enter_tag || "—")}</td>
+      <td class="r"><button class="btn tiny danger" data-exit="${esc(t.trade_id)}"
+          data-pair="${esc(t.pair)}">Close</button></td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="10" class="empty">Nothing open</td></tr>';
+
+  document.querySelectorAll("[data-exit]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Close ${b.dataset.pair} now at market price?\n\nThis places a real exit order.`)) return;
+    b.disabled = true; b.textContent = "Closing…";
+    try {
+      const r = await api("/api/live/forceexit", {
+        method: "POST", body: JSON.stringify({ trade_id: b.dataset.exit, order_type: "market" }),
+      });
+      toast(r?.result?.result || `Exit submitted for ${b.dataset.pair}`);
+      setTimeout(loadLive, 2500);
+    } catch (e) { toast(e.message, true); b.disabled = false; b.textContent = "Close"; }
+  });
+
+  // daily profit
+  $("daily-chart").innerHTML = dailyChart(o.daily?.data, stake);
+
+  // wallet
+  const cur = (o.balance?.currencies || []).filter(c => (c.balance ?? 0) > 0);
+  $("bal-rows").innerHTML = cur.length ? cur.map(c => `<tr>
+      <td><strong>${esc(c.currency)}</strong></td>
+      <td class="r num">${fmtNum(c.free, 6)}</td>
+      <td class="r num">${fmtNum(c.used, 6)}</td>
+      <td class="r num">${fmtNum(c.balance, 6)}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="empty">Nothing held</td></tr>';
+
+  // profit by pair
+  const perf = (o.performance || []).slice(0, 12);
+  $("perf-rows").innerHTML = rankList(perf, {
+    label: p => `${p.pair}  ·  ${p.count} trade${p.count === 1 ? "" : "s"}`,
+    value: p => `${p.profit_abs >= 0 ? "+" : ""}${fmtNum(p.profit_abs)} ${stake}`,
+    weight: p => Number(p.profit_abs) || 0,
+  });
+
+  // exit reasons + closed trades + log are their own reads, so a slow one does
+  // not hold up everything above.
+  loadLiveExtras(stake);
+}
+
+async function loadLiveExtras(stake) {
+  try {
+    const stats = await api("/api/live/stats");
+    // freqtrade keys this by reason and counts outcomes; there is no profit
+    // figure in it, so rank by how often each reason fires and show the split.
+    const reasons = Object.entries(stats.exit_reasons || {})
+      .map(([reason, v]) => ({
+        reason,
+        wins: v.wins || 0, losses: v.losses || 0, draws: v.draws || 0,
+        total: (v.wins || 0) + (v.losses || 0) + (v.draws || 0),
+      }))
+      .filter(r => r.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+    $("exit-rows").innerHTML = rankList(reasons, {
+      label: r => r.reason,
+      value: r => `${r.total} · ${r.wins}W / ${r.losses}L`,
+      weight: r => r.total,
+      signed: false,
+    });
+  } catch { $("exit-rows").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  try {
+    const t = await api("/api/live/trades");
+    const rows = (t.trades || []).filter(x => !x.is_open).slice(-60).reverse();
+    $("closed-rows").innerHTML = rows.length ? rows.map(x => {
+      const abs = Number(x.profit_abs ?? 0), pct = Number(x.profit_pct ?? 0);
+      return `<tr>
+        <td><strong>${esc(x.pair)}</strong></td>
+        <td class="muted">${shortDate(x.open_date)}</td>
+        <td class="muted">${shortDate(x.close_date)}</td>
+        <td class="r num">${fmtNum(x.open_rate, 6)}</td>
+        <td class="r num">${fmtNum(x.close_rate, 6)}</td>
+        <td class="r num">${signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
+        <td class="r num">${signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
+        <td class="muted">${esc(x.exit_reason || "—")}</td></tr>`;
+    }).join("") : '<tr><td colspan="8" class="empty">No closed trades</td></tr>';
+  } catch { /* the database-backed table below still shows history */ }
+
+  try {
+    const l = await api("/api/live/logs");
+    const lines = (l.logs || []).slice(-200)
+      .map(r => Array.isArray(r) ? `${r[0]}  ${r[2]}  ${r[4]}` : String(r));
+    $("bot-log").textContent = lines.join("\n") || "Nothing logged yet";
+    $("bot-log").classList.remove("muted");
+  } catch (e) { $("bot-log").textContent = `Log unavailable: ${e.message}`; }
+}
+
 async function refreshAll() {
   for (const [name, fn] of Object.entries({ strategies: loadStrategies, jobs: loadJobs,
-                                            runs: loadRuns, wallets: loadWallets, bots: loadBots })) {
+                                            runs: loadRuns, wallets: loadWallets,
+                                            bots: loadBots, live: loadLive })) {
     try { await fn(); } catch (e) { console.warn(name, e); }
   }
 }
+
+// The live page is the only one whose numbers move on their own, so it is the
+// only one that refreshes itself -- and only while it is the visible tab, so a
+// backgrounded browser is not polling the bot every fifteen seconds forever.
+setInterval(() => {
+  if (!session) return;
+  const live = document.querySelector('section#bots.active');
+  if (live && document.visibilityState === "visible") loadLive().catch(() => {});
+}, 15000);
 </script>
 </body>
 </html>

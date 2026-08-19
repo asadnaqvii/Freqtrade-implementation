@@ -92,12 +92,24 @@ services:
       - key: SUPABASE_JWT_SECRET
         sync: false
       # The bot is unreachable from the internet; this is its private address.
-      # Note what is deliberately absent: this service gets no exchange keys and
-      # no freqtrade API login. Wallet checks that need a key are run by the bot
-      # itself and read back out of the database, so a compromise of this public
-      # service cannot place an order.
+      #
+      # API_USERNAME / API_PASSWORD are the bot's REST API login and must match
+      # the values on freqtrade-bot. They are what lets the dashboard show live
+      # positions, profit and balances, and close a position. They are NOT
+      # exchange credentials -- the exchange keys stay on the bot alone, and
+      # this service never sees them.
+      #
+      # It is still a real widening: freqtrade's API can close positions, so a
+      # compromise of this public service could too. app/bot_api/client.py holds
+      # an explicit allowlist of the endpoints reachable from here -- reads,
+      # plus forceexit and nothing else. Notably not forceenter: entries are the
+      # strategy's job.
       - key: FREQTRADE_API_BASE_URL
         value: http://freqtrade-bot:8080
+      - key: API_USERNAME
+        sync: false
+      - key: API_PASSWORD
+        sync: false
       # Same-origin only unless you add a separate frontend host.
       - key: CORS_ORIGINS
         value: ""
