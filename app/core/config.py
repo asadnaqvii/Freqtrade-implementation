@@ -127,6 +127,9 @@ class Settings:
     worker: WorkerConfig
     cors_origins: list[str] = field(default_factory=list)
     log_level: str = "INFO"
+    #: Emails permitted to sign in. Empty means anyone with a valid token,
+    #: which is correct only if the Supabase project has sign-ups closed.
+    allowed_emails: frozenset[str] = frozenset()
 
     @property
     def freqtrade_db_url(self) -> str | None:
@@ -254,4 +257,9 @@ def get_settings() -> Settings:
         worker=worker,
         cors_origins=cors,
         log_level=_env("LOG_LEVEL", "INFO") or "INFO",
+        allowed_emails=frozenset(
+            part.strip().lower()
+            for part in (_env("ALLOWED_EMAILS") or "").split(",")
+            if part.strip()
+        ),
     )

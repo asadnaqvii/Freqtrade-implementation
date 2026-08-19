@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import CurrentUser, UserDB
+from app.backtest import periods, verdict
 from app.backtest.runner import BacktestRequest
 
 router = APIRouter(prefix="/api/backtests", tags=["backtests"])
@@ -168,6 +169,76 @@ async def get_equity(run_id: str, db: UserDB) -> dict:
             limit=2000,
         )
     }
+
+
+def _all_trades(db, run_id: str) -> list[dict]:
+    """Every trade in a run, paged out of PostgREST.
+
+    PostgREST caps a response, and a multi-year run over several pairs can pass
+    a few thousand trades. Paging here rather than truncating keeps the period
+    totals correct -- a breakdown computed from a truncated set is wrong in a way
+    that is very hard to notice.
+    """
+    out: list[dict] = []
+    page = 1000
+    while True:
+        rows = db.select(
+            "backtest_trades",
+            columns="pair,close_date,open_date,profit_abs,profit_ratio,stake_amount,"
+                    "trade_duration_min,exit_reason",
+            filters={"run_id": f"eq.{run_id}"},
+            order="close_date.asc",
+            limit=page,
+            offset=len(out),
+        )
+        out.extend(rows)
+        if len(rows) < page or len(out) >= 20000:
+            break
+    return out
+
+
+@router.get("/{run_id}/breakdown")
+async def get_breakdown(run_id: str, db: UserDB, period: str = "month") -> dict:
+    """Return per calendar period -- the answer to "was this steady or one month".
+
+    Computed from the stored trades rather than from freqtrade's own report, so
+    the period can be changed without re-running the backtest.
+    """
+    if period not in periods.PERIODS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"period must be one of: {', '.join(periods.PERIODS)}",
+        )
+    run = db.select_one(
+        "backtest_runs",
+        columns="id,starting_balance,stake_currency,timeframe",
+        filters={"id": f"eq.{run_id}"},
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="no such backtest run")
+
+    trades = _all_trades(db, run_id)
+    rows = periods.breakdown(
+        trades, period=period,
+        starting_balance=float(run.get("starting_balance") or 0) or None,
+    )
+    return {
+        "period": period,
+        "available": list(periods.PERIODS),
+        "stake_currency": run.get("stake_currency"),
+        "starting_balance": run.get("starting_balance"),
+        "rows": rows,
+        "summary": periods.summarise(rows),
+    }
+
+
+@router.get("/{run_id}/verdict")
+async def get_verdict(run_id: str, db: UserDB) -> dict:
+    """Whether this result is worth believing, separate from whether it is good."""
+    run = db.select_one("backtest_runs", filters={"id": f"eq.{run_id}"})
+    if not run:
+        raise HTTPException(status_code=404, detail="no such backtest run")
+    return verdict.assess(run, _all_trades(db, run_id)).as_dict()
 
 
 @router.delete("/jobs/{job_id}", status_code=204)

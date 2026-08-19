@@ -236,6 +236,24 @@ class CcxtProvider(WalletProvider):
             balances.append(Balance(currency=currency, free=free_f, used=used_f, total=total_f))
         return sorted(balances, key=lambda b: -b.total)
 
+    def earliest_candle(self, symbol: str, timeframe: str = "1d") -> datetime | None:
+        """The timestamp of the oldest candle the venue will serve for a pair.
+
+        `since=0` asks for the beginning of time; exchanges answer with the
+        beginning of *their* time, which is the number worth knowing before
+        promising someone a ten-year backtest.
+        """
+        try:
+            rows = self.exchange.fetch_ohlcv(symbol, timeframe, since=0, limit=1)
+        except Exception as exc:
+            raise self._translate(exc) from exc
+        if not rows:
+            return None
+        try:
+            return datetime.fromtimestamp(rows[0][0] / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, IndexError, OSError):
+            return None
+
     def fetch_markets(self) -> dict[str, MarketInfo]:
         if self._markets is not None:
             return self._markets

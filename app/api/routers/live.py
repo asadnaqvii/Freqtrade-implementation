@@ -15,20 +15,53 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.deps import CurrentUser
+from app.api.deps import CurrentUser, UserDB
 from app.bot_api import BotClient, BotError
 from app.bot_api.client import BotNotConfigured, BotUnreachable
+from app.core.config import get_settings
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 
 
-def _client() -> BotClient:
+def _client_for_caller(db) -> BotClient:
+    """The bot this caller owns -- and nobody else's.
+
+    Authentication is not authorization. A valid token only proves someone
+    signed up; on a project with open registration that is anyone at all. The
+    bot must therefore be looked up through the caller's own RLS-scoped client,
+    so the database decides whether they may see it. Reading the bot's address
+    from process settings instead would hand every signed-up account the live
+    positions, the wallet, and the button that closes a position.
+    """
     try:
-        return BotClient.from_settings()
-    except BotNotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        owned = db.select(
+            "bot_instances",
+            columns="id,name,api_base_url",
+            filters={"api_base_url": "not.is.null"},
+            order="last_heartbeat_at.desc",
+            limit=1,
+        )
+    except Exception as exc:  # noqa: BLE001 - a lookup failure must not open the door
+        raise HTTPException(status_code=502, detail="could not resolve your bot") from exc
+
+    if not owned:
+        # Deliberately the same answer as "no such bot": someone else's bot must
+        # not be distinguishable from one that does not exist.
+        raise HTTPException(
+            status_code=404,
+            detail="you have no bot with a reachable address. Deploy one, or set "
+                   "FREQTRADE_API_BASE_URL on the bot service so it registers where "
+                   "it can be reached.",
+        )
+
+    settings = get_settings()
+    return BotClient(
+        owned[0]["api_base_url"],
+        settings.bot.api_username,
+        settings.bot.api_password,
+    )
 
 
 def _handle(exc: BotError):
@@ -45,7 +78,7 @@ class ForceExitRequest(BaseModel):
 
 
 @router.get("/overview")
-async def overview(_: CurrentUser) -> dict:
+async def overview(db: UserDB) -> dict:
     """One call for the whole live page.
 
     Assembled server-side because the browser would otherwise make seven
@@ -53,15 +86,15 @@ async def overview(_: CurrentUser) -> dict:
     would leave the page in an ambiguous half-state.
     """
     try:
-        return _client().overview()
+        return _client_for_caller(db).overview()
     except BotError as exc:
         raise _handle(exc) from exc
 
 
 @router.get("/{section}")
-async def section(section: str, _: CurrentUser) -> dict:
+async def section(section: str, db: UserDB) -> dict:
     """Any single read the bot permits, for panels that refresh on their own."""
-    client = _client()
+    client = _client_for_caller(db)
     if section not in client.READS:
         raise HTTPException(
             status_code=404,
@@ -77,7 +110,7 @@ async def section(section: str, _: CurrentUser) -> dict:
 
 
 @router.post("/forceexit")
-async def force_exit(body: ForceExitRequest, user: CurrentUser) -> dict:
+async def force_exit(body: ForceExitRequest, user: CurrentUser, db: UserDB) -> dict:
     """Close an open position now, at market unless told otherwise.
 
     The only state-changing call the app can make against the bot. Logged with
@@ -86,7 +119,7 @@ async def force_exit(body: ForceExitRequest, user: CurrentUser) -> dict:
     """
     log.warning("force exit requested by %s for trade %s", user.profile_id, body.trade_id)
     try:
-        result = _client().force_exit(
+        result = _client_for_caller(db).force_exit(
             body.trade_id, order_type=body.order_type, amount=body.amount
         )
     except BotError as exc:

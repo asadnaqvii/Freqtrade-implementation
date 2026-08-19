@@ -187,5 +187,15 @@ class WalletProvider(abc.ABC):
         ...
 
     # -- optional ----------------------------------------------------------
+    def earliest_candle(self, symbol: str, timeframe: str = "1d") -> datetime | None:
+        """When this venue's history for a pair begins, or None if unknown.
+
+        Optional because not every provider has candles at all; the default says
+        so rather than inventing a date.
+        """
+        raise ProviderError(
+            f"{self.name} cannot report how far back its candle history goes"
+        )
+
     def describe(self) -> dict[str, Any]:
         return {"provider": self.name, "sandbox": self.sandbox, "live": self.is_live}
