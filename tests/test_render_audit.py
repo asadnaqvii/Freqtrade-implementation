@@ -14,9 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from render_audit import analyse  # noqa: E402
 
 
-def service(**kw):
+def service(*, region="oregon", plan="starter", **kw):
+    # Render puts region and plan inside serviceDetails, which is exactly where
+    # an earlier version of this code failed to look.
     base = {"id": "srv-1", "name": "svc", "type": "web_service",
-            "region": "oregon", "serviceDetails": {"plan": "starter"}}
+            "serviceDetails": {"plan": plan, "region": region}}
     base.update(kw)
     return {"service": base}
 
@@ -59,3 +61,15 @@ def test_handles_a_flat_response_shape():
     # Render has returned both {"service": {...}} and the bare object.
     [found] = analyse([{"id": "srv-2", "name": "flat", "type": "worker", "region": "singapore"}])
     assert found["name"] == "flat"
+    assert found["region"] == "singapore"
+
+
+def test_region_is_read_from_service_details():
+    [found] = analyse([service(region="oregon", name="bot")])
+    assert found["region"] == "oregon"
+    assert found["problems"], "a region read as 'unknown' would silently pass"
+
+
+def test_plan_is_read_from_service_details():
+    [found] = analyse([service(region="singapore", name="app", plan="standard")])
+    assert found["plan"] == "standard"

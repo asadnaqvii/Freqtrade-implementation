@@ -79,9 +79,13 @@ def analyse(services: list[dict]) -> list[dict]:
     findings = []
     for entry in services:
         service = entry.get("service", entry)
+        details = service.get("serviceDetails") or {}
         name = service.get("name", "?")
         kind = service.get("type", "?")
-        region = (service.get("region") or "").lower()
+        # Render nests region inside serviceDetails, not at the top level.
+        # Reading it from the wrong place reports every service as "unknown",
+        # which silently turns this audit into a no-op.
+        region = (details.get("region") or service.get("region") or "").lower()
 
         problems: list[str] = []
         notes: list[str] = []
@@ -117,7 +121,7 @@ def analyse(services: list[dict]) -> list[dict]:
         findings.append({
             "name": name, "id": service.get("id"), "type": kind,
             "region": region or "unknown",
-            "plan": (service.get("serviceDetails") or {}).get("plan", "?"),
+            "plan": details.get("plan", "?"),
             "suspended": service.get("suspended"),
             "problems": problems, "notes": notes,
         })

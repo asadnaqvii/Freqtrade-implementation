@@ -16,6 +16,7 @@ Two changes from a bare `freqtrade trade`:
 
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -117,7 +118,11 @@ config = {
         "listen_port": port,
         "verbosity": "error",
         "enable_openapi": True,
-        "jwt_secret_key": _env("JWT_SECRET_KEY", "supersecretkey"),
+        # freqtrade enforces a minimum length here, so a short placeholder makes
+        # the whole config invalid and the bot refuses to start. Generate a real
+        # one when none is supplied rather than shipping a weak constant: this
+        # signs the API's session tokens, and the API can place orders.
+        "jwt_secret_key": _env("JWT_SECRET_KEY") or secrets.token_urlsafe(48),
         # This service has no public ingress, so the API is only reachable from
         # inside Render's private network. CORS is not the boundary here.
         "CORS_origins": [],
