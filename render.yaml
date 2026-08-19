@@ -63,6 +63,10 @@ services:
         sync: false
       - key: PLATFORM_OWNER_ID
         sync: false
+      # Same value as on freqtrade-app: the bot records this as its address so
+      # the dashboard knows where to reach it.
+      - key: FREQTRADE_API_BASE_URL
+        sync: false
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: API_USERNAME
@@ -104,8 +108,14 @@ services:
       # an explicit allowlist of the endpoints reachable from here -- reads,
       # plus forceexit and nothing else. Notably not forceenter: entries are the
       # strategy's job.
+      #
+      # Set this to the internal address Render shows for freqtrade-bot, NOT
+      # http://freqtrade-bot:8080. Render appends a suffix to the service name
+      # and fronts it on its own internal port, so the real value looks like
+      # http://freqtrade-bot-hn7v:10000. The suffix is assigned when the service
+      # is created, which is why this cannot be written down here.
       - key: FREQTRADE_API_BASE_URL
-        value: http://freqtrade-bot:8080
+        sync: false
       - key: API_USERNAME
         sync: false
       - key: API_PASSWORD

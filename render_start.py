@@ -358,9 +358,14 @@ def register_and_heartbeat():
         "deploy_target": _env("DEPLOY_TARGET", "render"),
         "environment": _env("ENVIRONMENT", "production"),
         "db_schema": db_schema,
-        # Render routes a private service at http://<name>:<port> inside the
-        # region. Without this the app has no address to delegate to.
-        "api_base_url": _env("FREQTRADE_API_BASE_URL") or f"http://{bot_name}:{port}",
+        # Whatever FREQTRADE_API_BASE_URL says, and nothing invented if it is
+        # unset. The obvious guess -- http://<service-name>:<PORT> -- is wrong on
+        # Render: it appends a suffix to the name and fronts the service on its
+        # own internal port, so the real address looks like
+        # http://freqtrade-bot-hn7v:10000. Recording a plausible-looking address
+        # that does not resolve is worse than recording none, because the
+        # dashboard then reports the bot as down rather than as unconfigured.
+        "api_base_url": _env("FREQTRADE_API_BASE_URL"),
         "status": "running",
         "started_at": now,
         "last_heartbeat_at": now,
