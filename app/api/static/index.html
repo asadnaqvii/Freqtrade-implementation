@@ -748,7 +748,10 @@ async function loadRuns() {
   const { runs } = await api("/api/backtests");
   $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr data-run="${esc(r.id)}" style="cursor:pointer">
       <td><strong>${esc(r.strategy_name)}</strong></td>
-      <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}</td>
+      <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}
+        ${r.coverage_pct != null && r.coverage_pct < 95
+          ? `<br><span class="pill ${r.coverage_pct < 50 ? "bad" : "warn"}" title="${esc(r.coverage_note || "")}">${fmtNum(r.coverage_pct, 0)}% of ${esc(r.requested_timerange || "request")}</span>`
+          : ""}</td>
       <td class="num">${r.total_trades}</td>
       <td class="num">${fmtPct((r.win_rate || 0) * 100, 1)}</td>
       <td class="num">${signed(r.profit_total_pct, fmtPct(r.profit_total_pct))}</td>

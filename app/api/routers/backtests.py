@@ -122,7 +122,10 @@ async def list_runs(db: UserDB, strategy_id: str | None = None, limit: int = 50)
                     "profit_total_abs,profit_total_pct,profit_factor,expectancy,cagr,sharpe,"
                     "sortino,calmar,max_drawdown_abs,max_drawdown_pct,starting_balance,"
                     "final_balance,best_pair,worst_pair,trades_per_day,avg_trade_duration_min,"
-                    "duration_seconds,created_at",
+                    "duration_seconds,created_at,"
+                    # What was asked for, next to what ran. Without these the
+                    # list cannot show that a decade-long request tested a month.
+                    "requested_timerange,coverage_pct,coverage_note",
             filters=filters,
             order="created_at.desc",
             limit=min(limit, 200),
