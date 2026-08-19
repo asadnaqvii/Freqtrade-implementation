@@ -320,16 +320,66 @@ function render() {
   }
 }
 
+// Supabase treats signUp/signIn with an empty field as an *anonymous* attempt,
+// and then reports "Anonymous sign-ins are disabled" -- which says nothing about
+// the actual problem. Check the fields here so the message names the real one.
+function credentials() {
+  const email = $("email").value.trim();
+  const password = $("password").value;
+  if (!email) { toast("Enter your email address.", true); $("email").focus(); return null; }
+  if (!email.includes("@")) { toast("That does not look like an email address.", true); $("email").focus(); return null; }
+  if (!password) { toast("Enter a password.", true); $("password").focus(); return null; }
+  return { email, password };
+}
+
+function authError(error) {
+  const message = error?.message || "Something went wrong.";
+  if (/anonymous/i.test(message)) {
+    return "Enter both an email address and a password.";
+  }
+  if (/invalid login credentials/i.test(message)) {
+    return "That email and password combination was not recognised. If you have not made an account yet, choose Create account.";
+  }
+  if (/password should be at least/i.test(message)) {
+    return "That password is too short. Use at least 6 characters.";
+  }
+  if (/already registered|already exists/i.test(message)) {
+    return "An account already exists for that email. Choose Sign in instead.";
+  }
+  return message;
+}
+
 $("signin").onclick = async () => {
-  const { error } = await sb.auth.signInWithPassword(
-    { email: $("email").value.trim(), password: $("password").value });
-  error ? toast(error.message, true) : toast("Signed in");
+  const creds = credentials();
+  if (!creds) return;
+  $("signin").disabled = true;
+  const { error } = await sb.auth.signInWithPassword(creds);
+  $("signin").disabled = false;
+  error ? toast(authError(error), true) : toast("Signed in");
 };
+
 $("signup").onclick = async () => {
-  const { error } = await sb.auth.signUp(
-    { email: $("email").value.trim(), password: $("password").value });
-  error ? toast(error.message, true) : toast("Account created. Check your email if confirmation is on.");
+  const creds = credentials();
+  if (!creds) return;
+  if (creds.password.length < 6) {
+    return toast("Use a password of at least 6 characters.", true);
+  }
+  $("signup").disabled = true;
+  const { data, error } = await sb.auth.signUp(creds);
+  $("signup").disabled = false;
+  if (error) return toast(authError(error), true);
+  // With email confirmation on, signUp returns a user but no session.
+  if (data?.session) {
+    toast("Account created. You are signed in.");
+  } else {
+    toast("Account created. Check your email to confirm it, then sign in.");
+  }
 };
+
+// Enter submits, which is what everyone expects from two fields and a button.
+for (const id of ["email", "password"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("signin").click(); });
+}
 $("signout").onclick = async () => { await sb.auth.signOut(); session = null; render(); };
 
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
