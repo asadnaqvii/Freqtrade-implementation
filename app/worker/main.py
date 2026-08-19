@@ -94,8 +94,12 @@ def resolve_strategy(client: SupabaseClient, job: dict[str, Any]) -> tuple[str, 
     if version_id:
         version = client.select_one(
             "strategy_versions",
+            # The FK is named explicitly: strategy_specs and strategy_versions
+            # reference each other (strategy_id one way, current_version_id the
+            # other), so an unqualified embed is ambiguous and PostgREST refuses
+            # it rather than guessing.
             columns="id,version,generated_code,compiles,compile_error,strategy_id,"
-                    "strategy_specs(name,class_name)",
+                    "strategy_specs!strategy_versions_strategy_id_fkey(name,class_name)",
             filters={"id": f"eq.{version_id}"},
         )
         if not version:

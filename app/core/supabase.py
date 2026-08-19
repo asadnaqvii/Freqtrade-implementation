@@ -97,12 +97,22 @@ class SupabaseClient:
                 method, url, params=params, json=json_body, headers=headers
             )
 
-        if response.status_code >= 400:
+        # 300 Multiple Choices, not just 4xx: PostgREST answers 300 when an
+        # embedded resource is ambiguous, and its body is an error document. A
+        # `>= 400` check lets that through as if it were data, and the caller
+        # then indexes an error dict as though it were a row.
+        if response.status_code >= 300:
             hint = None
             if response.status_code in (401, 403):
                 hint = (
                     "the row exists but RLS refused it, or the token is wrong -- "
                     "check owner_id and which client you used"
+                )
+            elif response.status_code == 300:
+                hint = (
+                    "ambiguous embedded resource: two tables here are joined by more "
+                    "than one foreign key, so the relationship has to be named "
+                    "explicitly, e.g. other_table!fk_name(columns)"
                 )
             raise SupabaseError(response.status_code, response.text, hint=hint)
 
@@ -133,7 +143,17 @@ class SupabaseClient:
         if offset is not None:
             params["offset"] = offset
         result = self._request("GET", table, params=params)
-        return result or []
+        if result is None:
+            return []
+        if isinstance(result, dict):
+            # A select always returns a collection. Anything else means the
+            # response was not what we asked for, and returning it would push a
+            # confusing failure into the caller instead of here.
+            raise SupabaseError(
+                200, json.dumps(result)[:400],
+                hint=f"expected a list of rows from {table}, got a single object",
+            )
+        return result
 
     def select_one(
         self, table: str, *, columns: str = "*", filters: dict[str, str] | None = None
