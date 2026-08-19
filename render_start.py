@@ -333,7 +333,7 @@ os.makedirs("user_data/strategies", exist_ok=True)
 os.system("cp strategies/*.py user_data/strategies/ 2>/dev/null || true")
 
 argv = [
-    "freqtrade", "trade",
+    "trade",
     "--config", "config/config.json",
     "--strategy", strategy,
     "--strategy-path", "strategies",
@@ -345,4 +345,25 @@ if db_url:
 print(f"starting freqtrade on port {port}", flush=True)
 sys.stdout.flush()
 sys.stderr.flush()
-os.execvp("freqtrade", argv)
+
+# freqtrade runs in this process rather than via execvp, because the numpy
+# adapters below have to be registered in the interpreter that does the
+# inserting. exec would replace this process and discard them.
+if db_url:
+    try:
+        from app.core.numpy_pg import register as register_numpy_adapters
+
+        if register_numpy_adapters():
+            print("psycopg2: numpy adapters registered", flush=True)
+        else:
+            print(
+                "WARNING: could not register numpy adapters. Writes carrying numpy "
+                "values will fail with 'schema \"np\" does not exist'.",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"WARNING: numpy adapter registration failed: {exc}", flush=True)
+
+from freqtrade.main import main as freqtrade_main
+
+sys.exit(freqtrade_main(argv))
