@@ -188,3 +188,73 @@ def summarise(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "worst": {"label": worst["label"], "profit_abs": worst["profit_abs"],
                   "profit_pct": worst["profit_pct"]},
     }
+
+
+# ---------------------------------------------------------------------------
+# Did the backtest actually cover what was asked for?
+# ---------------------------------------------------------------------------
+
+def parse_timerange(text: str | None) -> tuple[datetime | None, datetime | None]:
+    """freqtrade's YYYYMMDD-YYYYMMDD, either side optionally blank."""
+    if not text or "-" not in text:
+        return None, None
+    start_text, _, end_text = text.partition("-")
+
+    def one(part: str) -> datetime | None:
+        part = part.strip()
+        if len(part) != 8 or not part.isdigit():
+            return None
+        try:
+            return datetime.strptime(part, "%Y%m%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    return one(start_text), one(end_text)
+
+
+def coverage(requested: str | None, actual_start: Any, actual_end: Any,
+             *, timeframe: str | None = None) -> dict[str, Any]:
+    """Compare the window asked for with the window that ran.
+
+    Exists because the gap used to be invisible: a request for ten years that
+    found one month of candles produced a successful-looking run over that
+    month. The number is the point, but so is the explanation -- the usual cause
+    is the venue keeping far less history at fine timeframes than at coarse ones,
+    and that is actionable in a way that "no data" is not.
+    """
+    want_start, want_end = parse_timerange(requested)
+    got_start, got_end = _when(actual_start), _when(actual_end)
+    if not want_start and not want_end:
+        return {"requested_timerange": requested, "coverage_pct": None, "coverage_note": None}
+    if not got_start or not got_end:
+        return {
+            "requested_timerange": requested, "coverage_pct": 0.0,
+            "coverage_note": "The backtest produced no usable window at all.",
+        }
+
+    want_start = want_start or got_start
+    want_end = want_end or got_end
+    wanted_days = max((want_end - want_start).days, 0)
+    got_days = max((got_end - got_start).days, 0)
+    if wanted_days <= 0:
+        return {"requested_timerange": requested, "coverage_pct": None, "coverage_note": None}
+
+    pct = min(100.0, got_days / wanted_days * 100.0)
+    if pct >= 95:
+        return {"requested_timerange": requested, "coverage_pct": round(pct, 2),
+                "coverage_note": None}
+
+    note = (
+        f"You asked for {wanted_days} days ({want_start:%Y-%m-%d} to {want_end:%Y-%m-%d}) "
+        f"and only {got_days} days were available "
+        f"({got_start:%Y-%m-%d} to {got_end:%Y-%m-%d}) — {pct:.0f}% of the request. "
+    )
+    if timeframe and timeframe.endswith("m"):
+        note += (
+            f"Exchanges keep much less history at {timeframe} than at daily candles. "
+            "For a multi-year test use 1h or 1d, or shorten the window."
+        )
+    else:
+        note += "The exchange does not have candles going back that far for these pairs."
+    return {"requested_timerange": requested, "coverage_pct": round(pct, 2),
+            "coverage_note": note}

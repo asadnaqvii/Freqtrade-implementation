@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.backtest import periods
 from app.backtest.runner import BacktestError, BacktestRequest, run_backtest
 from app.core.config import get_settings
 from app.core.supabase import SupabaseClient, SupabaseError
@@ -152,6 +153,18 @@ def store_results(client: SupabaseClient, job: dict[str, Any], artifacts) -> str
     # A job may not have specified pairs the export knows about; prefer the export.
     if not run_row.get("pairs"):
         run_row["pairs"] = list(job.get("pairs") or [])
+
+    # Record the gap between the window asked for and the window that ran. Left
+    # unrecorded, a ten-year request that found one month of candles looks
+    # exactly like a ten-year request that succeeded.
+    run_row.update(periods.coverage(
+        job.get("timerange"),
+        run_row.get("timerange_start"),
+        run_row.get("timerange_end"),
+        timeframe=run_row.get("timeframe") or job.get("timeframe"),
+    ))
+    if run_row.get("coverage_note"):
+        log.warning("job %s: %s", job["id"], run_row["coverage_note"])
 
     inserted = client.insert("backtest_runs", run_row)
     run_id = inserted[0]["id"]

@@ -299,23 +299,41 @@ def run_backtest(
         if request.download_data:
             if progress:
                 progress(f"downloading {request.timeframe} candles for {len(request.pairs)} pair(s)")
-            download_cmd = [
+            base_cmd = [
                 *freqtrade_cmd(), "download-data",
                 "--config", str(config_file),
                 "--datadir", str(data_path),
                 "--timeframes", request.timeframe,
                 "--pairs", *request.pairs,
             ]
-            if request.timerange:
-                download_cmd += ["--timerange", request.timerange]
+            timerange_args = ["--timerange", request.timerange] if request.timerange else []
 
-            code, output = _run(download_cmd, cwd=workdir, timeout=timeout_seconds)
-            if code != 0:
-                # A failed download is not always fatal: cached data may already
-                # cover the window. Note it and let backtesting be the judge.
-                log.warning("download-data exited %s; continuing on cached data", code)
+            # Two passes, and the first one is the whole point. freqtrade's
+            # download-data only ever APPENDS to what is already cached -- it
+            # will not fetch candles older than the oldest one on disk unless
+            # told to prepend. So once a short run had cached a month of 5m
+            # candles, every later request for five or ten years found data
+            # present, downloaded nothing, and quietly backtested that month.
+            # The result reported success over 29 days having been asked for a
+            # decade, which is the worst possible way to be wrong.
+            passes: list[tuple[str, list[str]]] = []
+            if request.timerange:
+                passes.append(("extending history backwards",
+                               base_cmd + timerange_args + ["--prepend"]))
+            passes.append(("fetching recent candles", base_cmd + timerange_args))
+
+            for label, cmd in passes:
                 if progress:
-                    progress("download failed; trying cached candles")
+                    progress(label)
+                code, output = _run(cmd, cwd=workdir, timeout=timeout_seconds)
+                if code != 0:
+                    # Not always fatal -- cached data may already cover the
+                    # window -- but the coverage check after the backtest now
+                    # decides that on evidence rather than on hope.
+                    log.warning("download-data (%s) exited %s: %s",
+                                label, code, output[-400:])
+                    if progress:
+                        progress(f"{label}: download failed, continuing on cached candles")
 
         export_file = results_dir / f"{request.strategy_name}.json"
 

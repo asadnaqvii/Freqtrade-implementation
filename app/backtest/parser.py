@@ -269,13 +269,25 @@ class BacktestExport:
             if "total_quote" not in frame.columns or "date" not in frame.columns:
                 return []
 
-            series = frame[["date", "total_quote"]].dropna()
+            # One row per currency per candle, and total_quote is that ONE
+            # currency's value in quote terms -- not the account total. Taking
+            # rows as they come therefore did two wrong things at once: it
+            # emitted several rows sharing a timestamp, which collides with the
+            # (run_id, at) unique index, and each surviving point showed a
+            # single currency's holding rather than the equity, which also made
+            # the drawdown wrong. Sum per timestamp first.
+            series = (
+                frame[["date", "total_quote"]]
+                .dropna()
+                .groupby("date", as_index=False, sort=True)["total_quote"]
+                .sum()
+            )
             if series.empty:
                 return []
 
             peak = series["total_quote"].cummax()
             drawdown_abs = peak - series["total_quote"]
-            trough_index = int(drawdown_abs.values.argmax())
+            trough_index = int(drawdown_abs.values.argmax()) if len(drawdown_abs) else 0
 
             step = max(1, len(series) // max_points)
             keep = set(range(0, len(series), step))
@@ -284,14 +296,19 @@ class BacktestExport:
             keep.add(trough_index)
 
             rows = []
+            seen: set[str] = set()
             for position in sorted(keep):
                 timestamp = series["date"].iloc[position]
                 balance = _num(series["total_quote"].iloc[position])
                 high_water = _num(peak.iloc[position]) or 0.0
                 down = _num(drawdown_abs.iloc[position]) or 0.0
+                at = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
+                if at in seen:
+                    continue
+                seen.add(at)
                 rows.append({
                     "run_id": run_id,
-                    "at": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
+                    "at": at,
                     "balance": balance,
                     "drawdown_abs": down,
                     "drawdown_pct": (down / high_water * 100.0) if high_water else 0.0,

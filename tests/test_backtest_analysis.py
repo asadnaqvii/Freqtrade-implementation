@@ -233,3 +233,46 @@ def test_a_losing_run_is_described_plainly_not_as_a_ratio():
     assert f.verdict == verdict.BAD
     assert "lost money overall" in f.message
     assert "to make -" not in f.message
+
+
+# ---------------------------------------------------------------------------
+# Coverage: the silent-truncation bug
+# ---------------------------------------------------------------------------
+
+from app.backtest.periods import coverage, parse_timerange  # noqa: E402
+
+
+def test_a_timerange_parses_both_ways_round():
+    a, b = parse_timerange("20160819-20260819")
+    assert (a.year, b.year) == (2016, 2026)
+    assert parse_timerange(None) == (None, None)
+    assert parse_timerange("garbage") == (None, None)
+
+
+def test_ten_years_answered_with_a_month_is_recorded_as_such():
+    # The exact failure: requested 2016-2026, got 2026-07-21 to 2026-08-19.
+    c = coverage("20160819-20260819", "2026-07-21T05:40:00Z", "2026-08-19T00:00:00Z",
+                 timeframe="5m")
+    assert c["coverage_pct"] < 1
+    assert "asked for" in c["coverage_note"]
+    assert "1h or 1d" in c["coverage_note"], "a 5m request should suggest a coarser candle"
+
+
+def test_a_window_that_was_actually_covered_carries_no_complaint():
+    c = coverage("20240101-20241231", "2024-01-01T00:00:00Z", "2024-12-30T00:00:00Z")
+    assert c["coverage_pct"] > 95 and c["coverage_note"] is None
+
+
+def test_no_requested_window_is_not_a_shortfall():
+    assert coverage(None, "2024-01-01T00:00:00Z", "2024-02-01T00:00:00Z")["coverage_pct"] is None
+
+
+def test_the_verdict_leads_with_a_truncated_window():
+    a = verdict.assess({
+        "total_trades": 94, "wins": 40, "requested_timerange": "20210819-20260819",
+        "coverage_pct": 1.6, "coverage_note": "You asked for 1826 days and only 30 were available.",
+    })
+    f = find(a, "coverage.window")
+    assert f.verdict == verdict.BAD
+    assert a.findings[0].code == "coverage.window", "this must be the first thing you read"
+    assert a.headline == "Do not act on this result"

@@ -122,6 +122,7 @@ def assess(run: dict[str, Any], trades: Sequence[dict[str, Any]] | None = None) 
     profit_abs = _f(run.get("profit_total_abs"))
     pairs = list(run.get("pairs") or [])
 
+    out.append(_check_coverage(run))
     out.append(_check_sample(total, wins))
     out.append(_check_window(run, total))
     if pairs:
@@ -142,6 +143,37 @@ def assess(run: dict[str, Any], trades: Sequence[dict[str, Any]] | None = None) 
 # ---------------------------------------------------------------------------
 # The checks
 # ---------------------------------------------------------------------------
+
+def _check_coverage(run: dict[str, Any]) -> Finding | None:
+    """Did the test cover the window that was asked for?
+
+    First check on purpose. Every other finding describes a result; this one
+    says whether the result is about the question you asked. A ten-year request
+    answered with twenty-nine days of data is not a weak result -- it is a
+    different experiment.
+    """
+    requested = run.get("requested_timerange")
+    pct = _f(run.get("coverage_pct"))
+    if not requested or pct is None:
+        return None
+    note = run.get("coverage_note")
+
+    if pct < 50:
+        return Finding(
+            "coverage.window", "Window actually tested", BAD,
+            note or f"Only {pct:.0f}% of the requested window had data.",
+            "This result is not about the period you asked for.",
+        )
+    if pct < 95:
+        return Finding(
+            "coverage.window", "Window actually tested", WEAK,
+            note or f"{pct:.0f}% of the requested window had data.",
+        )
+    return Finding(
+        "coverage.window", "Window actually tested", GOOD,
+        f"Data covered {pct:.0f}% of the window you asked for.",
+    )
+
 
 def _check_sample(total: int, wins: int) -> Finding:
     margin = _wilson_halfwidth(wins, total)

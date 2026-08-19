@@ -275,3 +275,51 @@ def test_equity_curve_downsamples_but_keeps_the_deepest_drawdown():
 ])
 def test_duration_parsing(value, expected):
     assert _duration_to_minutes(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# Equity curve: one row per currency per candle
+# ---------------------------------------------------------------------------
+
+def test_equity_curve_sums_currencies_instead_of_colliding_on_timestamp():
+    """The wallet feather has a row per currency per candle.
+
+    total_quote is that one currency's value, not the account total. Taking rows
+    as they came emitted several rows sharing a timestamp -- which violates the
+    (run_id, at) unique index and killed the run at the final write -- and each
+    surviving point showed one currency's holding rather than the equity, which
+    also made the drawdown wrong.
+    """
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    stamps = pd.date_range("2024-01-01", periods=4, freq="h", tz="UTC")
+    wallet = pd.DataFrame({
+        "date": list(stamps) * 3,
+        "currency": ["USDT"] * 4 + ["BTC"] * 4 + ["ETH"] * 4,
+        "total_quote": [600.0, 500.0, 400.0, 700.0]
+                       + [300.0, 300.0, 200.0, 250.0]
+                       + [100.0, 100.0, 100.0, 100.0],
+    })
+    export = BacktestExport({"strategy": {"S": {}}}, wallet=wallet)
+    rows = export.equity_rows("run-1")
+
+    ats = [r["at"] for r in rows]
+    assert len(ats) == len(set(ats)), "duplicate timestamps would break the unique index"
+    assert len(rows) == 4
+    # Account equity is the sum across currencies, not any single one.
+    assert [r["balance"] for r in rows] == [1000.0, 900.0, 700.0, 1050.0]
+    # Deepest point is 1000 -> 700, so 300 and 30%.
+    worst = max(rows, key=lambda r: r["drawdown_abs"])
+    assert worst["drawdown_abs"] == 300.0
+    assert worst["drawdown_pct"] == pytest.approx(30.0)
+
+
+def test_equity_curve_survives_a_wallet_with_nothing_in_it():
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    empty = pd.DataFrame({"date": [], "total_quote": []})
+    assert BacktestExport({"strategy": {"S": {}}}, wallet=empty).equity_rows("run-1") == []
