@@ -1,0 +1,353 @@
+"""Tests for wallet providers and the verification engine.
+
+The geo-block tests matter most: distinguishing "the venue refused where you are"
+from "the venue is down" is the difference between a fix that takes five minutes
+and an afternoon of rotating keys that were never the problem.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from app.providers import registry
+from app.providers.base import (
+    Balance,
+    ConnectivityReport,
+    Credentials,
+    MarketInfo,
+    OrderInfo,
+    ProviderAuthError,
+    ProviderGeoBlockError,
+    ProviderUnavailableError,
+    WalletProvider,
+)
+from app.providers.ccxt_provider import CcxtProvider, _is_geo_block
+from app.providers.kucoin import KuCoinProvider
+from app.validation import checks as C
+from app.validation import engine
+from app.validation.reconcile import reconcile_orders
+
+
+# ---------------------------------------------------------------------------
+# Geo-block detection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "kucoin {\"code\":\"403\",\"msg\":\"Access denied\"}",
+        "Service unavailable from a restricted location",
+        "This service is not available in your region",
+        "Your country is not supported",
+        "403 Forbidden",
+        "ip is not allowed",
+    ],
+)
+def test_geo_block_messages_are_recognised(message):
+    assert _is_geo_block(message)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Invalid API key",
+        "Connection timed out",
+        "Insufficient balance",
+        "Order size too small",
+    ],
+)
+def test_ordinary_errors_are_not_mistaken_for_geo_blocks(message):
+    assert not _is_geo_block(message)
+
+
+def test_geo_block_translates_to_its_own_error_type():
+    import ccxt
+
+    provider = CcxtProvider("kucoin")
+    translated = provider._translate(ccxt.ExchangeError("Access denied from a restricted location"))
+    assert isinstance(translated, ProviderGeoBlockError)
+
+
+def test_bad_key_translates_to_auth_error_not_geo_block():
+    import ccxt
+
+    provider = CcxtProvider("kucoin")
+    translated = provider._translate(ccxt.AuthenticationError("Invalid API key"))
+    assert isinstance(translated, ProviderAuthError)
+    assert not isinstance(translated, ProviderGeoBlockError)
+
+
+def test_network_failure_translates_to_unavailable():
+    import ccxt
+
+    provider = CcxtProvider("kucoin")
+    translated = provider._translate(ccxt.NetworkError("connection reset"))
+    assert isinstance(translated, ProviderUnavailableError)
+
+
+def test_kucoin_geo_block_carries_the_region_remedy():
+    provider = KuCoinProvider()
+    import ccxt
+
+    translated = provider._translate(ccxt.ExchangeError("restricted location"))
+    assert isinstance(translated, ProviderGeoBlockError)
+    assert "non-US region" in (translated.detail or "")
+    assert "fixed at creation" in (translated.detail or "")
+
+
+# ---------------------------------------------------------------------------
+# Fakes for the engine
+# ---------------------------------------------------------------------------
+
+class FakeProvider(WalletProvider):
+    name = "fake"
+
+    def __init__(self, *, geo_blocked=False, permissions=None, balance=1000.0,
+                 markets=None, skew=0.0, orders=None, credentials=None):
+        super().__init__(credentials or Credentials(key="k", secret="s"))
+        self._geo = geo_blocked
+        self._permissions = permissions if permissions is not None else {"read", "trade"}
+        self._balance = balance
+        self._markets = markets
+        self._skew = skew
+        self._orders = orders or []
+
+    def check_connectivity(self):
+        return ConnectivityReport(
+            reachable=not self._geo, geo_blocked=self._geo, latency_ms=12.0,
+            server_time_skew_seconds=None if self._geo else self._skew,
+            egress_ip="203.0.113.7", egress_country="US" if self._geo else "SG",
+            detail="blocked" if self._geo else None,
+        )
+
+    def verify_credentials(self):
+        if self._geo:
+            raise ProviderGeoBlockError("blocked", venue="fake")
+        return {"ok": True}
+
+    def permissions(self):
+        if self._geo:
+            raise ProviderGeoBlockError("blocked", venue="fake")
+        return set(self._permissions)
+
+    def fetch_balances(self):
+        return [Balance("USDT", self._balance, 0.0, self._balance)]
+
+    def fetch_markets(self):
+        if self._markets is not None:
+            return self._markets
+        return {
+            "BTC/USDT": MarketInfo("BTC/USDT", "BTC", "USDT", True, True, min_cost=1.0),
+            "ETH/USDT": MarketInfo("ETH/USDT", "ETH", "USDT", True, True, min_cost=1.0),
+        }
+
+    def fetch_orders(self, symbol, *, since=None, limit=100):
+        return [o for o in self._orders if o.symbol == symbol]
+
+
+# ---------------------------------------------------------------------------
+# Checks
+# ---------------------------------------------------------------------------
+
+def test_withdrawal_permission_is_a_critical_failure():
+    outcome = engine.run_suite(
+        "connectivity", FakeProvider(permissions={"read", "trade", "withdraw"})
+    )
+    perm = next(r for r in outcome.results if r.code == "provider.permissions")
+    assert perm.status == C.FAILED
+    assert perm.severity == C.CRITICAL
+    assert "withdraw" in perm.message.lower()
+    assert outcome.status == "failed"
+
+
+def test_read_and_trade_only_key_passes():
+    outcome = engine.run_suite("connectivity", FakeProvider(permissions={"read", "trade"}))
+    perm = next(r for r in outcome.results if r.code == "provider.permissions")
+    assert perm.status == C.PASSED
+
+
+def test_read_only_key_warns_rather_than_fails():
+    outcome = engine.run_suite("connectivity", FakeProvider(permissions={"read"}))
+    perm = next(r for r in outcome.results if r.code == "provider.permissions")
+    assert perm.status == C.WARNING
+
+
+def test_geo_block_fails_the_run_and_names_the_region():
+    outcome = engine.run_suite("connectivity", FakeProvider(geo_blocked=True))
+    assert outcome.status == "failed"
+    geo = next(r for r in outcome.results if r.code == "provider.geo_block")
+    assert geo.severity == C.CRITICAL
+    assert geo.actual["egress_country"] == "US"
+    region = next(r for r in outcome.results if r.code == "provider.egress_region")
+    assert region.status == C.FAILED
+
+
+def test_non_us_egress_passes_the_region_check():
+    outcome = engine.run_suite("connectivity", FakeProvider())
+    region = next(r for r in outcome.results if r.code == "provider.egress_region")
+    assert region.status == C.PASSED
+    assert region.actual["egress_country"] == "SG"
+
+
+def test_clock_skew_beyond_the_limit_fails():
+    outcome = engine.run_suite("connectivity", FakeProvider(skew=12.0))
+    skew = next(r for r in outcome.results if r.code == "provider.clock_skew")
+    assert skew.status == C.FAILED
+    assert "NTP" in (skew.remediation or "")
+
+
+def test_stake_below_venue_minimum_fails_with_the_required_amount():
+    markets = {
+        "BTC/USDT": MarketInfo("BTC/USDT", "BTC", "USDT", True, True, min_cost=25.0),
+    }
+    outcome = engine.run_suite(
+        "preflight", FakeProvider(markets=markets), pairs=["BTC/USDT"], stake_amount=10.0
+    )
+    check = next(r for r in outcome.results if r.code == "market.min_notional")
+    assert check.status == C.FAILED
+    assert check.expected["min_stake_to_cover_all"] == 25.0
+    assert "25.0" in (check.remediation or "")
+
+
+def test_unknown_pair_fails_the_tradability_check():
+    outcome = engine.run_suite(
+        "preflight", FakeProvider(), pairs=["BTC/USDT", "NOTREAL/USDT"]
+    )
+    check = next(r for r in outcome.results if r.code == "market.pair_tradable")
+    assert check.status == C.FAILED
+    assert check.actual["missing"] == ["NOTREAL/USDT"]
+
+
+def test_balance_below_one_stake_fails():
+    outcome = engine.run_suite(
+        "preflight", FakeProvider(balance=2.0), pairs=["BTC/USDT"],
+        stake_amount=10.0, max_open_trades=3,
+    )
+    check = next(r for r in outcome.results if r.code == "balance.sufficient")
+    assert check.status == C.FAILED
+
+
+def test_balance_covering_some_slots_warns_rather_than_fails():
+    outcome = engine.run_suite(
+        "preflight", FakeProvider(balance=25.0), pairs=["BTC/USDT"],
+        stake_amount=10.0, max_open_trades=6,
+    )
+    check = next(r for r in outcome.results if r.code == "balance.sufficient")
+    assert check.status == C.WARNING
+    assert check.actual["slots_fundable"] == 2
+
+
+def test_a_check_that_raises_becomes_an_error_not_a_crash():
+    class Exploding(FakeProvider):
+        def fetch_balances(self):
+            raise RuntimeError("boom")
+
+    outcome = engine.run_suite("balance", Exploding())
+    assert outcome.status in ("failed", "warning")
+    assert len(outcome.results) == 3  # the suite still completed
+
+
+def test_simulated_provider_is_labelled_in_the_summary():
+    outcome = engine.run_suite("preflight", registry.build({"provider": "paper"}),
+                               pairs=["BTC/USDT"])
+    assert "simulated" in outcome.summary.lower()
+
+
+def test_unknown_suite_name_is_rejected():
+    with pytest.raises(ValueError) as exc:
+        engine.run_suite("nonsense", FakeProvider())
+    assert "unknown validation kind" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+
+def _order(order_id, **kw):
+    defaults = dict(
+        symbol="BTC/USDT", side="buy", status="closed", order_type="limit",
+        price=100.0, average=100.0, amount=1.0, filled=1.0, remaining=0.0,
+        cost=100.0, fee_cost=0.1, fee_currency="USDT",
+        timestamp=datetime.now(timezone.utc),
+    )
+    defaults.update(kw)
+    return OrderInfo(order_id=order_id, **defaults)
+
+
+def test_matching_orders_report_agreement():
+    provider = FakeProvider(orders=[_order("X1")])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "X1",
+            "filled": 1.0, "average": 100.0, "status": "closed"}]
+    findings = reconcile_orders(provider, bot)
+    assert [f.kind for f in findings] == ["matched"]
+
+
+def test_partial_fill_recorded_as_complete_is_caught():
+    provider = FakeProvider(orders=[_order("X1", filled=0.5)])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "X1",
+            "filled": 1.0, "average": 100.0, "status": "closed"}]
+    findings = reconcile_orders(provider, bot)
+    assert any(f.kind == "amount" for f in findings)
+
+
+def test_order_the_bot_never_placed_is_flagged_as_critical():
+    provider = FakeProvider(orders=[_order("GHOST")])
+    outcome, findings = engine.run_reconciliation(provider, [
+        {"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": None,
+         "filled": 1.0, "average": 100.0, "status": "closed"}
+    ])
+    assert any(f.kind == "missing_in_bot" for f in findings)
+    check = next(r for r in outcome.results if r.code == "reconciliation.missing_in_bot")
+    assert check.severity == C.CRITICAL
+    assert "rotate the API key" in (check.remediation or "")
+
+
+def test_price_within_tolerance_is_not_a_discrepancy():
+    provider = FakeProvider(orders=[_order("X1", average=100.05)])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "X1",
+            "filled": 1.0, "average": 100.0, "status": "closed"}]
+    findings = reconcile_orders(provider, bot)
+    assert [f.kind for f in findings] == ["matched"]
+
+
+def test_price_beyond_tolerance_is_a_discrepancy():
+    provider = FakeProvider(orders=[_order("X1", average=110.0)])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "X1",
+            "filled": 1.0, "average": 100.0, "status": "closed"}]
+    findings = reconcile_orders(provider, bot)
+    assert any(f.kind == "price" for f in findings)
+
+
+def test_closed_and_filled_are_treated_as_the_same_status():
+    provider = FakeProvider(orders=[_order("X1", status="filled")])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "X1",
+            "filled": 1.0, "average": 100.0, "status": "closed"}]
+    findings = reconcile_orders(provider, bot)
+    assert [f.kind for f in findings] == ["matched"]
+
+
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+def test_registry_returns_the_kucoin_subclass_for_kucoin():
+    assert isinstance(registry.build({"provider": "kucoin"}), KuCoinProvider)
+
+
+def test_registry_falls_back_to_generic_ccxt_for_any_other_venue():
+    provider = registry.build({"provider": "binance", "ccxt_id": "binance"})
+    assert isinstance(provider, CcxtProvider)
+    assert provider.ccxt_id == "binance"
+
+
+def test_registry_exposes_many_venues():
+    # The point of the ccxt path is that "any wallet provider" is not aspirational.
+    assert len(registry.available()) > 50
+
+
+def test_credentials_repr_never_leaks_the_key():
+    creds = Credentials(key="SUPERSECRETKEY", secret="alsosecret")
+    assert "SUPERSECRETKEY" not in repr(creds)
+    assert "alsosecret" not in repr(creds)
