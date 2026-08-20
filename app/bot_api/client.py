@@ -55,10 +55,14 @@ class BotClient:
         "status",          # open trades, with live profit
         "profit",          # aggregate P&L summary
         "daily",           # per-day profit, for the chart
+        "weekly",          # and per week
+        "monthly",         # and per month
+        "historic_balance",  # wallet value over time, not just now
+        "profit_all",      # the same summary including open positions
+        "entries",         # profit by entry tag
         "balance",         # per-currency wallet
         "count",           # open vs max trades
         "performance",     # profit by pair
-        "entries",         # profit by entry tag
         "exits",           # profit by exit reason
         "mix_tags",        # entry+exit tag combinations
         "stats",           # exit reason counts and trade durations

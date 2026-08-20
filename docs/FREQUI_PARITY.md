@@ -25,14 +25,15 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
 ## Multi Pane panels
 
 1. **Pair list** — every whitelisted pair, with a filter box. Selecting one drives
-   the chart. *Not done.*
+   the chart. *Shown as the current whitelist; no filter and it drives nothing yet,
+   because there is no chart for it to drive.*
 2. **Bot info** — version, state, strategy, timeframe, stake, max open trades,
    dry-run flag. *Done, as the status bar.*
 3. **Performance** — four sub-tabs, each `Name | Profit % | Profit USDT | Count`:
    - Performance: by pair. *Done.*
-   - Entries: by entry tag. *Not done.*
-   - Exits: by exit reason. *Done, but without profit % or a per-reason profit column.*
-   - Mix Tag: entry+exit tag combinations. *Not done.*
+   - Entries: by entry tag. *Done.*
+   - Exits: by exit reason. *Done.*
+   - Mix Tag: entry+exit tag combinations. *Done.*
 4. **Balance** — per currency. *Done.*
 5. **Period Breakdown** — Days / Weeks / Months, and Abs $ / Rel % toggles. A
    combined chart (profit line over trade-count bars) plus a table of
@@ -43,7 +44,7 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
      meaningful when it is an artefact of the scaling. Two aligned plots instead.
 6. **Logs** — *Done.*
 7. **Locks** — pairs the strategy has locked after a loss, and until when.
-   *Not done.*
+   *Endpoint allowlisted, no panel yet.*
 
 ## Chart (right column)
 
@@ -65,3 +66,13 @@ indicator columns and the trade markers.
 
 `ID | Pair | Amount | Stake amount | Open rate | Current rate | Current profit % |
 Open date`. *Done, plus held-duration and a close button.*
+
+## From the Dashboard view
+
+- **Profit over time combined** — days/weeks/months, absolute or relative. *Done.*
+- **Cumulative profit** — the running total across trades. *Done, as the line over
+  the period bars.*
+- **Wallet history** — account value over time, from `/historic_balance`. *Done.*
+- **Closed trades** with close reason. *Done.*
+- **Bot comparison** — one row per bot. Not replicated: there is one bot. The
+  table exists in the database (`bot_instances`) if that changes.

@@ -595,6 +595,14 @@
     </div>
 
     <div class="statusbar" id="live-status"></div>
+    <div class="actions" style="margin:-6px 0 16px">
+      <button class="btn tiny" data-ctl="start">Start</button>
+      <button class="btn tiny" data-ctl="stopentry">Stop opening new trades</button>
+      <button class="btn tiny danger" data-ctl="stop">Stop the bot</button>
+      <button class="btn tiny" data-ctl="reload_config">Reload config</button>
+      <span class="muted" style="font-size:12px;align-self:center">Stopping outright
+        leaves open positions unmanaged; stopping entries keeps managing them.</span>
+    </div>
     <div class="kpis" id="live-kpis"></div>
 
     <div class="card">
@@ -610,9 +618,50 @@
     </div>
 
     <div class="card">
-      <h2>Daily profit</h2>
-      <p class="hint">Each bar is one day's realised profit. The line is the running total.</p>
-      <div id="daily-chart"><div class="empty">No closed days yet</div></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Profit over time</h2>
+        <span class="spacer" style="flex:1"></span>
+        <div class="chips" id="live-period">
+          <button class="btn tiny active" data-lp="daily">Days</button>
+          <button class="btn tiny" data-lp="weekly">Weeks</button>
+          <button class="btn tiny" data-lp="monthly">Months</button>
+        </div>
+      </div>
+      <p class="hint">Bars are each period's realised profit; the line is the running
+        total across them.</p>
+      <div id="daily-chart"><div class="empty">No closed periods yet</div></div>
+      <div class="scroll" style="margin-top:12px"><table><thead><tr>
+        <th>Period</th><th class="r">Profit</th><th class="r">%</th>
+        <th class="r">Trades</th><th class="r">Balance after</th>
+      </tr></thead><tbody id="live-period-rows">
+        <tr><td colspan="5" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Wallet over time</h2>
+      <p class="hint">What the account has actually been worth, as the bot recorded it.</p>
+      <div id="wallet-chart"><div class="empty">&mdash;</div></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Performance</h2>
+        <span class="spacer" style="flex:1"></span>
+        <div class="chips" id="perf-tabs">
+          <button class="btn tiny active" data-perf="performance">By pair</button>
+          <button class="btn tiny" data-perf="entries">By entry tag</button>
+          <button class="btn tiny" data-perf="exits">By exit reason</button>
+          <button class="btn tiny" data-perf="mix_tags">By entry + exit</button>
+        </div>
+      </div>
+      <p class="hint" id="perf-hint">Which pairs actually made money.</p>
+      <div class="scroll"><table><thead><tr>
+        <th id="perf-col">Pair</th><th class="r">Profit %</th>
+        <th class="r">Profit</th><th class="r">Trades</th><th></th>
+      </tr></thead><tbody id="perf-rows">
+        <tr><td colspan="5" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
     </div>
 
     <div class="grid3">
@@ -626,9 +675,9 @@
         </tbody></table></div>
       </div>
       <div class="card">
-        <h2>Profit by pair</h2>
-        <p class="hint">Which pairs actually made money.</p>
-        <div id="perf-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
+        <h2>Pairs the bot is watching</h2>
+        <p class="hint">The whitelist as the pairlist filters currently leave it.</p>
+        <div id="whitelist-box"><div class="empty">&mdash;</div></div>
       </div>
       <div class="card">
         <h2>Why trades closed</h2>
@@ -1490,8 +1539,9 @@ async function loadLive() {
     } catch (e) { toast(e.message, true); b.disabled = false; b.textContent = "Close"; }
   });
 
-  // daily profit
-  $("daily-chart").innerHTML = dailyChart(o.daily?.data, stake);
+  loadLivePeriod(stake);
+  loadWalletHistory(stake);
+  loadPerformance(stake);
 
   // wallet
   const cur = (o.balance?.currencies || []).filter(c => (c.balance ?? 0) > 0);
@@ -1502,18 +1552,141 @@ async function loadLive() {
       <td class="r num">${fmtNum(c.balance, 6)}</td></tr>`).join("")
     : '<tr><td colspan="4" class="empty">Nothing held</td></tr>';
 
-  // profit by pair
-  const perf = (o.performance || []).slice(0, 12);
-  $("perf-rows").innerHTML = rankList(perf, {
-    label: p => `${p.pair}  ·  ${p.count} trade${p.count === 1 ? "" : "s"}`,
-    value: p => `${p.profit_abs >= 0 ? "+" : ""}${fmtNum(p.profit_abs)} ${stake}`,
-    weight: p => Number(p.profit_abs) || 0,
-  });
 
   // exit reasons + closed trades + log are their own reads, so a slow one does
   // not hold up everything above.
   loadLiveExtras(stake);
 }
+
+let livePeriod = "daily", perfView = "performance";
+
+document.querySelectorAll("#live-period [data-lp]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#live-period [data-lp]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  livePeriod = b.dataset.lp;
+  loadLivePeriod().catch(() => {});
+});
+
+document.querySelectorAll("#perf-tabs [data-perf]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#perf-tabs [data-perf]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  perfView = b.dataset.perf;
+  loadPerformance().catch(() => {});
+});
+
+// freqtrade returns the same shape for days, weeks and months, so one renderer
+// covers all three and the toggle costs a fetch rather than a code path.
+async function loadLivePeriod(stake = "") {
+  try {
+    const d = await api(`/api/live/${livePeriod}`);
+    const rows = (d.data || []).slice().reverse();      // oldest first
+    if (!rows.length) {
+      $("daily-chart").innerHTML = '<div class="empty">No closed periods yet</div>';
+      $("live-period-rows").innerHTML = '<tr><td colspan="5" class="empty">&mdash;</td></tr>';
+      return;
+    }
+    $("daily-chart").innerHTML = dailyChart(rows.slice().reverse(), stake || d.stake_currency);
+    $("live-period-rows").innerHTML = rows.slice().reverse().map(r => {
+      const v = Number(r.abs_profit) || 0;
+      const rel = r.rel_profit != null ? Number(r.rel_profit) * 100 : null;
+      return `<tr>
+        <td><strong>${esc(r.date || r.week || r.month || "")}</strong></td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${rel == null ? "—" : signed(rel, fmtNum(rel) + "%")}</td>
+        <td class="r num muted">${r.trade_count ?? 0}</td>
+        <td class="r num muted">${r.starting_balance != null
+            ? fmtNum(Number(r.starting_balance) + v, 2) : "—"}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("daily-chart").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadWalletHistory(stake = "") {
+  try {
+    const d = await api("/api/live/historic_balance");
+    const rows = d.data || d.balances || [];
+    const points = rows
+      .map(r => ({ x: r.date || r.at, y: Number(r.balance ?? r.total ?? r.value) }))
+      .filter(p => p.x && isFinite(p.y));
+    if (points.length < 2) {
+      $("wallet-chart").innerHTML =
+        '<div class="empty">The bot has not recorded enough balance history yet</div>';
+      return;
+    }
+    $("wallet-chart").innerHTML = lineChart(points, {
+      id: "wallet-line", fill: true, format: v => fmtNum(v, 0),
+    });
+    attachCrosshair("wallet-line", points, p =>
+      `<b>${fmtNum(p.y, 2)}</b> ${esc(stake)}<br>
+       <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+  } catch (e) {
+    $("wallet-chart").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+const PERF_LABEL = {
+  performance: ["Pair", "Which pairs actually made money."],
+  entries: ["Entry tag", "Which entry conditions are worth keeping."],
+  exits: ["Exit reason", "Mostly stop-loss means it is being stopped out, not exiting."],
+  mix_tags: ["Entry + exit", "Which combinations of getting in and getting out pay."],
+};
+
+async function loadPerformance(stake = "") {
+  const [label, hint] = PERF_LABEL[perfView] || PERF_LABEL.performance;
+  $("perf-col").textContent = label;
+  $("perf-hint").textContent = hint;
+  try {
+    const d = await api(`/api/live/${perfView}`);
+    const rows = Array.isArray(d) ? d : (d.data || []);
+    if (!rows.length) {
+      $("perf-rows").innerHTML =
+        '<tr><td colspan="5" class="empty">No closed trades yet</td></tr>';
+      return;
+    }
+    const worst = Math.max(...rows.map(r => Math.abs(Number(r.profit_abs) || 0)), 1);
+    $("perf-rows").innerHTML = rows.map(r => {
+      const v = Number(r.profit_abs) || 0;
+      const pct = r.profit_pct != null ? Number(r.profit_pct)
+                : r.profit_ratio != null ? Number(r.profit_ratio) * 100 : null;
+      const name = r.pair || r.enter_tag || r.exit_reason || r.mix_tag || "—";
+      return `<tr>
+        <td><strong>${esc(name)}</strong></td>
+        <td class="r num">${pct == null ? "—" : signed(pct, fmtNum(pct) + "%")}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num muted">${r.count ?? 0}</td>
+        <td style="width:30%"><div class="bar"><i style="width:${(Math.abs(v) / worst * 100).toFixed(1)}%;
+          background:var(--${v >= 0 ? "pos" : "neg"})"></i></div></td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("perf-rows").innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Controls are the reason this page matters once real money is moving, so each
+// one says what it will do before it does it.
+const CTL_CONFIRM = {
+  stop: "Stop the bot entirely?\n\nOpen positions stay open and stop being managed — "
+      + "no stop-loss, no take-profit, until it is started again.",
+  stopentry: "Stop opening new trades?\n\nExisting positions keep being managed normally.",
+  start: "Start the bot?",
+  reload_config: "Reload the configuration from disk?",
+};
+
+document.querySelectorAll("[data-ctl]").forEach(b => b.onclick = async () => {
+  const action = b.dataset.ctl;
+  if (!confirm(CTL_CONFIRM[action] || `Send ${action}?`)) return;
+  const label = b.textContent;
+  b.disabled = true; b.textContent = "Sending…";
+  try {
+    const r = await api("/api/live/control", {
+      method: "POST", body: JSON.stringify({ action }),
+    });
+    toast(r?.result?.status || `${action} sent`);
+    setTimeout(() => loadLive().catch(() => {}), 1500);
+  } catch (e) { toast(e.message, true); }
+  b.disabled = false; b.textContent = label;
+});
 
 async function loadLiveExtras(stake) {
   try {
@@ -1553,6 +1726,16 @@ async function loadLiveExtras(stake) {
         <td class="muted">${esc(x.exit_reason || "—")}</td></tr>`;
     }).join("") : '<tr><td colspan="8" class="empty">No closed trades</td></tr>';
   } catch { /* the database-backed table below still shows history */ }
+
+  try {
+    const w = await api("/api/live/whitelist");
+    const pairs = w.whitelist || [];
+    $("whitelist-box").innerHTML = pairs.length
+      ? `<div class="chips">${pairs.map(x => `<span class="chip-pair">${esc(x)}</span>`).join("")}</div>
+         <p class="hint" style="margin:8px 0 0">${pairs.length} pairs · method
+         ${esc((w.method || []).join(", ") || "—")}</p>`
+      : '<div class="empty">No pairs currently whitelisted</div>';
+  } catch { $("whitelist-box").innerHTML = '<div class="empty">Unavailable</div>'; }
 
   try {
     const l = await api("/api/live/logs");
