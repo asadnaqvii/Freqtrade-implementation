@@ -389,3 +389,73 @@ def test_each_exchange_gets_its_own_candle_cache():
         made.append(str(build_config(request, data_dir=path, user_dir=root)["datadir"]))
     assert made[0] != made[1]
     assert made[0].endswith("binance") and made[1].endswith("kucoin")
+
+
+# ---------------------------------------------------------------------------
+# Warm-up: the download window is wider than the tested window
+# ---------------------------------------------------------------------------
+
+def _req(**kw):
+    base = dict(strategy_name="S", exchange="binance", timeframe="1d",
+                pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+                stake_amount=100, max_open_trades=3, strategy_source="x")
+    base.update(kw)
+    return BacktestRequest(**base)
+
+
+def test_download_reaches_back_before_the_tested_window():
+    """A request for exactly 2022 returned nothing at all before this.
+
+    freqtrade shifts the backtest start forward by startup_candle_count. With
+    only the requested window downloaded it shifted past the end and reported
+    "no data left after adjusting for startup candles".
+    """
+    from app.backtest.runner import download_timerange
+
+    r = _req(timerange="20220101-20221231",
+             strategy_source="    startup_candle_count: int = 400\n")
+    fetched = download_timerange(r)
+    assert fetched.endswith("-20221231"), "the end of the window must not move"
+    assert fetched.split("-")[0] < "20220101", "the start must reach back"
+    # 400 candles of warm-up plus margin, on daily candles.
+    assert fetched.startswith("2020"), fetched
+
+
+def test_the_tested_window_itself_is_never_widened():
+    # The user's dates stay the dates that get tested; only the fetch is wider.
+    r = _req(timerange="20220101-20221231", strategy_source="startup_candle_count = 400")
+    assert r.timerange == "20220101-20221231"
+
+
+def test_warm_up_scales_with_the_timeframe():
+    from app.backtest.runner import download_timerange
+
+    daily = download_timerange(_req(timerange="20220101-20220201",
+                                    timeframe="1d", strategy_source="startup_candle_count = 100"))
+    five_min = download_timerange(_req(timerange="20220101-20220201",
+                                       timeframe="5m", strategy_source="startup_candle_count = 100"))
+    # 100 daily candles reach back months; 100 five-minute candles, hours.
+    assert daily.split("-")[0] < five_min.split("-")[0]
+
+
+def test_a_strategy_that_declares_nothing_still_gets_warm_up():
+    from app.backtest.runner import download_timerange, DEFAULT_STARTUP_CANDLES
+
+    fetched = download_timerange(_req(timerange="20220101-20221231", strategy_source="pass"))
+    assert fetched.split("-")[0] < "20220101"
+    assert DEFAULT_STARTUP_CANDLES >= 200
+
+
+def test_no_timerange_means_no_padding_to_do():
+    from app.backtest.runner import download_timerange
+
+    assert download_timerange(_req(timerange=None)) is None
+
+
+def test_startup_candle_count_is_read_from_the_strategy():
+    from app.backtest.runner import startup_candles, DEFAULT_STARTUP_CANDLES
+
+    assert startup_candles("    startup_candle_count: int = 250\n") == 250
+    assert startup_candles("startup_candle_count = 30") == 30
+    assert startup_candles(None) == DEFAULT_STARTUP_CANDLES
+    assert startup_candles("no mention here") == DEFAULT_STARTUP_CANDLES

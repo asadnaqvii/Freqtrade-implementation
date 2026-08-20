@@ -22,7 +22,7 @@ import sys
 import uuid
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -257,6 +257,72 @@ def _explain_failure(output: str, request: BacktestRequest) -> str:
     return f"freqtrade exited with an error:\n{tail}"
 
 
+#: Candles of warm-up to assume when the strategy does not say. Comfortably above
+#: the usual 200-period moving average, and the data is cached, so being generous
+#: here costs one download rather than a failed run.
+DEFAULT_STARTUP_CANDLES = 400
+
+#: Extra candles on top of the strategy's own requirement. freqtrade drops
+#: partial candles at the edges, so landing exactly on the boundary still fails.
+STARTUP_MARGIN_CANDLES = 40
+
+# Matches both `startup_candle_count = 400` and the annotated form freqtrade's
+# own strategies use, `startup_candle_count: int = 400`. Missing the annotation
+# meant silently falling back to the default -- which happened to be right often
+# enough to hide the bug.
+_STARTUP_RE = re.compile(r"startup_candle_count\s*(?::\s*[A-Za-z_][\w\[\], ]*\s*)?=\s*(\d+)")
+
+_TIMEFRAME_MINUTES = {"m": 1, "h": 60, "d": 1440, "w": 10080, "M": 43200}
+
+
+def timeframe_minutes(timeframe: str) -> int | None:
+    if not timeframe or timeframe[-1] not in _TIMEFRAME_MINUTES:
+        return None
+    try:
+        return int(timeframe[:-1]) * _TIMEFRAME_MINUTES[timeframe[-1]]
+    except ValueError:
+        return None
+
+
+def startup_candles(strategy_source: str | None) -> int:
+    """How many candles the strategy needs before it can produce a signal."""
+    if not strategy_source:
+        return DEFAULT_STARTUP_CANDLES
+    found = _STARTUP_RE.search(strategy_source)
+    if not found:
+        return DEFAULT_STARTUP_CANDLES
+    try:
+        return max(int(found.group(1)), 0)
+    except ValueError:
+        return DEFAULT_STARTUP_CANDLES
+
+
+def download_timerange(request: "BacktestRequest") -> str | None:
+    """The window to DOWNLOAD, which is wider than the window to test.
+
+    freqtrade needs startup_candle_count candles before the first one it can
+    trade, so it shifts the backtest start forward by that many. Download only
+    the requested window and it shifts past the end: "no data left after
+    adjusting for startup candles", and a request for exactly 2022 returns
+    nothing at all.
+
+    So the download reaches further back while `backtesting` still receives the
+    user's own timerange -- their dates stay the dates that are tested, and the
+    warm-up happens on candles just outside them.
+    """
+    if not request.timerange:
+        return None
+    start, end = _requested_bounds(request.timerange)
+    minutes = timeframe_minutes(request.timeframe)
+    if start is None or minutes is None:
+        return request.timerange
+
+    needed = startup_candles(request.strategy_source) + STARTUP_MARGIN_CANDLES
+    padded = start - timedelta(minutes=needed * minutes)
+    tail = request.timerange.partition("-")[2]
+    return f"{padded:%Y%m%d}-{tail}"
+
+
 def _requested_bounds(timerange: str | None) -> tuple[datetime | None, datetime | None]:
     """freqtrade's YYYYMMDD-YYYYMMDD, either side optionally blank."""
     if not timerange or "-" not in timerange:
@@ -372,7 +438,9 @@ def run_backtest(
                 "--timeframes", request.timeframe,
                 "--pairs", *request.pairs,
             ]
-            timerange_args = ["--timerange", request.timerange] if request.timerange else []
+            # Wider than what gets tested: see download_timerange.
+            fetch_range = download_timerange(request)
+            timerange_args = ["--timerange", fetch_range] if fetch_range else []
 
             # Two passes, and the first one is the whole point. freqtrade's
             # download-data only ever APPENDS to what is already cached -- it
@@ -382,7 +450,7 @@ def run_backtest(
             # present, downloaded nothing, and quietly backtested that month.
             # The result reported success over 29 days having been asked for a
             # decade, which is the worst possible way to be wrong.
-            want_start, _ = _requested_bounds(request.timerange)
+            want_start, _ = _requested_bounds(fetch_range)
 
             # Establish the cache first. --prepend extends an existing dataset
             # backwards; with nothing on disk it does nothing at all, which is
