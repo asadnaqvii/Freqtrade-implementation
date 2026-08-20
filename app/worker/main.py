@@ -32,6 +32,11 @@ BUILTIN_STRATEGY_DIR = Path(__file__).resolve().parents[2] / "strategies"
 
 _stopping = threading.Event()
 
+#: How often to look for jobs abandoned by a dead worker. Shorter than the
+#: staleness window the database uses, so a stalled job is always seen by some
+#: sweep rather than depending on a restart happening to land at the right time.
+STALL_SWEEP_SECONDS = 120
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -305,16 +310,31 @@ def run_forever() -> None:
     for directory in (settings.worker.data_dir, settings.worker.user_dir):
         Path(directory).mkdir(parents=True, exist_ok=True)
 
-    # Anything a previous instance died holding is fair game again.
-    try:
-        revived = client.rpc("requeue_stalled_backtest_jobs")
-        if revived:
-            log.info("requeued %s stalled job(s)", revived)
-    except Exception as exc:
-        log.warning("could not requeue stalled jobs: %s", exc)
+    def sweep_stalled() -> None:
+        """Return jobs whose worker died mid-run to the queue.
+
+        This used to run only at startup, and that is not enough: a job orphaned
+        by a deploy is not yet stale when the replacement boots seconds later, so
+        the one check it got found nothing and nothing ever looked again. A job
+        could then sit in `running` forever, with no process behind it -- which
+        is exactly what happened across a run of redeploys.
+        """
+        try:
+            revived = client.rpc("requeue_stalled_backtest_jobs")
+            if revived:
+                log.info("requeued %s stalled job(s)", revived)
+        except Exception as exc:
+            log.warning("could not requeue stalled jobs: %s", exc)
+
+    sweep_stalled()
+    last_sweep = time.monotonic()
 
     idle_logged = False
     while not _stopping.is_set():
+        if time.monotonic() - last_sweep >= STALL_SWEEP_SECONDS:
+            sweep_stalled()
+            last_sweep = time.monotonic()
+
         try:
             job = client.rpc("claim_backtest_job", {"p_worker": worker_name})
         except Exception as exc:
