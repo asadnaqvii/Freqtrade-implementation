@@ -53,6 +53,46 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def memory_limit_mb() -> int | None:
+    """This container's memory ceiling, if the kernel will say.
+
+    Worth knowing out loud. A backtest that exceeds it does not raise, log, or
+    fail: the kernel kills the process, the platform restarts the service, the
+    stall sweep requeues the job, and it happens again -- three times, and then
+    the job is marked "worker stopped reporting". Nothing in that chain ever
+    mentions memory, so the one number that explains it is the one number
+    nobody has.
+    """
+    for path in ("/sys/fs/cgroup/memory.max",                       # cgroup v2
+                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):    # cgroup v1
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if raw in ("max", ""):
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # cgroup v1 reports a sentinel near 2**63 when there is no limit.
+        if value <= 0 or value > (1 << 50):
+            continue
+        return value // (1024 * 1024)
+    return None
+
+
+def memory_used_mb() -> int | None:
+    """Resident memory of this container right now, if the kernel will say."""
+    for path in ("/sys/fs/cgroup/memory.current",
+                 "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        try:
+            return int(Path(path).read_text().strip()) // (1024 * 1024)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 class Heartbeat:
     """Keeps heartbeat_at fresh while a job runs.
 
@@ -296,7 +336,7 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
                 user_dir=settings.worker.user_dir,
                 timeout_seconds=settings.worker.job_timeout_seconds,
                 progress=report,
-                should_stop=lambda: beat.cancelled,
+                should_stop=lambda: beat.cancelled or _stopping.is_set(),
             )
             report("Saving trades and equity curve", stage="storing")
             run_id = store_results(client, job, artifacts)
@@ -369,6 +409,9 @@ def run_forever() -> None:
     client = SupabaseClient.service()
     worker_name = settings.worker.name
     log.info("worker %s starting; polling every %ss", worker_name, settings.worker.poll_interval_seconds)
+    limit = memory_limit_mb()
+    if limit:
+        log.info("memory limit %s MB (in use %s MB)", limit, memory_used_mb())
 
     for directory in (settings.worker.data_dir, settings.worker.user_dir):
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -414,15 +457,69 @@ def run_forever() -> None:
             continue
 
         idle_logged = False
-        log.info("claimed job %s (%s)", job["id"], job.get("builtin_strategy") or "builder strategy")
-        process(client, job)
+        log.info("claimed job %s (%s); memory %s/%s MB", job["id"],
+                 job.get("builtin_strategy") or "builder strategy",
+                 memory_used_mb(), memory_limit_mb())
+
+        # A job that has already been cut short twice is the shape an
+        # out-of-memory kill makes: no error is ever recorded, because nothing
+        # gets the chance to record one.
+        if int(job.get("attempts") or 0) >= 2:
+            log.warning(
+                "job %s has been restarted %s time(s) with no error recorded. That is "
+                "what an out-of-memory kill looks like from here: the kernel stops the "
+                "process, the platform restarts the service, and the job comes back. "
+                "Memory limit is %s MB. If this fails again, the backtest needs a "
+                "shorter window, fewer pairs, a coarser timeframe, or a larger worker.",
+                job["id"], job.get("attempts"), memory_limit_mb(),
+            )
+        _in_flight.update(client=client, job_id=job["id"])
+        try:
+            process(client, job)
+        finally:
+            _in_flight["job_id"] = None
 
     log.info("worker %s stopped", worker_name)
 
 
+#: The job this worker is holding, so a shutdown can hand it back rather than
+#: abandon it. Set before process() and cleared after.
+_in_flight: dict[str, Any] = {"client": None, "job_id": None}
+
+
+def release_in_flight(reason: str) -> None:
+    """Return the job this worker is holding to the queue, now.
+
+    A worker being shut down knows it is abandoning the job. Without this the
+    job sits in `running` with no process behind it until the stall sweep
+    notices five minutes later -- which is exactly what "the backtest is stuck"
+    looked like. Handing it back makes the next worker pick it up on its next
+    ten-second poll.
+
+    Best effort and deliberately small: this runs from a signal handler, with a
+    SIGKILL following in seconds.
+    """
+    client, job_id = _in_flight.get("client"), _in_flight.get("job_id")
+    if not client or not job_id:
+        return
+    _in_flight["job_id"] = None
+    try:
+        client.update(
+            "backtest_jobs",
+            {"status": "queued", "claimed_by": None, "claimed_at": None,
+             "started_at": None, "heartbeat_at": None,
+             "progress": f"requeued: {reason}", "progress_pct": 0, "stage": "queued"},
+            filters={"id": f"eq.{job_id}", "status": "eq.running"},
+        )
+        log.info("released job %s back to the queue (%s)", job_id, reason)
+    except Exception as exc:  # noqa: BLE001 - the stall sweep is still the backstop
+        log.warning("could not release job %s: %s", job_id, exc)
+
+
 def _handle_signal(signum: int, _frame: Any) -> None:
-    log.info("signal %s received; finishing the current job then stopping", signum)
+    log.info("signal %s received; releasing the current job and stopping", signum)
     _stopping.set()
+    release_in_flight(f"worker stopped by signal {signum}")
 
 
 def main() -> int:
