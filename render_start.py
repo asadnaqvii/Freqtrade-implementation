@@ -715,18 +715,81 @@ if db_url:
 
 # Nothing above this line places an order. Everything below does, so this is
 # where being the only trading instance stops being optional.
-if db_url:
-    if not acquire_trading_lock(db_url, bot_name):
-        sys.exit(1)
+#
+# The lock is taken *after* freqtrade is serving, not before, and the process
+# starts in STOPPED state regardless of what was asked for. That ordering is the
+# whole point:
+#
+#   Render will not stop the incumbent until the replacement is healthy, and a
+#   private service is healthy when its port answers. Taking the lock first made
+#   the replacement wait on a lock the incumbent would not release until the
+#   replacement was healthy -- a deadlock. Making the incumbent stand down broke
+#   the deadlock but exchanged it for a different failure: a deliberate exit
+#   looks exactly like a crash to the platform, so every deploy that used it was
+#   marked failed even when the handover worked perfectly.
+#
+#   Serving first means the replacement is healthy in seconds without trading,
+#   Render stops the incumbent in its own time, the incumbent's connection dies,
+#   the lock frees, and the replacement starts trading. Nobody exits early and
+#   only one process ever trades.
+def _take_lock_then_trade():
+    """Wait for the port, take the lock, then start trading -- in that order."""
+    import base64
+    import urllib.error
+    import urllib.request
 
+    auth = base64.b64encode(
+        f"{config['api_server']['username']}:{config['api_server']['password']}".encode()
+    ).decode()
+
+    def local(path, method="GET"):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/v1/{path}", method=method)
+        req.add_header("Authorization", f"Basic {auth}")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode() or "{}")
+
+    for _ in range(120):
+        try:
+            local("ping")
+            break
+        except Exception:  # noqa: BLE001 - it is simply not up yet
+            time.sleep(1)
+    else:
+        print("freqtrade never answered locally; not taking the trading lock", flush=True)
+        return
+
+    if not acquire_trading_lock(db_url, bot_name, wait_seconds=1800):
+        print("TRADING LOCK NOT ACQUIRED: staying stopped rather than running a second "
+              "trading process against one database.", flush=True)
+        return
+
+    # Only now is trading safe. Honour whatever state was actually asked for.
+    wanted = _desired_state()
+    if wanted == "running":
+        try:
+            print(f"lock held; starting the trader ({local('start', 'POST').get('status')})",
+                  flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not start the trader: {exc}", flush=True)
+    else:
+        print(f"lock held; staying {wanted} as asked", flush=True)
+
+    # Still watched, as a fallback: if the platform ever leaves two instances
+    # up, the older one gives way rather than both sitting on one database.
     def stand_down():
-        # Exit hard: freqtrade owns the main thread and there is no clean way to
-        # ask it to stop from here. The positions are in Postgres, so the
-        # replacement picks them up on its next start.
-        print("exiting so the replacement can take over", flush=True)
+        print("a newer instance is waiting and the platform has not stopped this one; "
+              "yielding the lock", flush=True)
         os._exit(0)
 
     watch_for_takeover(bot_name, stand_down)
+
+
+if db_url:
+    # Serve first, trade second.
+    config["initial_state"] = "stopped"
+    with open("config/config.json", "w") as handle:
+        json.dump(config, handle, indent=2)
+    threading.Thread(target=_take_lock_then_trade, daemon=True, name="trading-lock").start()
 
 print(f"starting freqtrade on port {port}", flush=True)
 sys.stdout.flush()

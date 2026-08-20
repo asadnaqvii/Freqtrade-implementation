@@ -340,3 +340,58 @@ def test_the_watcher_survives_a_dropped_query_and_still_stands_down(monkeypatch,
             break
         real_time.sleep(0.02)
     assert yielded, "the watcher never recovered, so the next deploy would fail"
+
+
+# ---------------------------------------------------------------------------
+# Serve first, trade second
+# ---------------------------------------------------------------------------
+
+def test_the_startup_serves_before_it_takes_the_lock():
+    """The ordering that stops a deploy being marked failed.
+
+    Render will not stop the incumbent until the replacement is healthy, and a
+    private service is healthy when its port answers. So the port has to open
+    before the lock is waited on -- otherwise the replacement waits for a lock
+    the incumbent only releases once the replacement is healthy.
+
+    Asserted against the source because the alternative is booting freqtrade.
+    """
+    source = (ROOT / "render_start.py").read_text()
+
+    launch = source.index("from freqtrade.main import main as freqtrade_main")
+    thread = source.index('name="trading-lock"')
+    assert thread < launch, "the lock thread must be started before freqtrade blocks"
+
+    body = source[source.index("def _take_lock_then_trade"):launch]
+    assert body.index('local("ping")') < body.index("acquire_trading_lock"), (
+        "it must wait for the port to answer before waiting on the lock"
+    )
+    assert body.index("acquire_trading_lock") < body.index('local(\'start\', \'POST\')'), (
+        "it must hold the lock before it starts trading"
+    )
+
+
+def test_the_process_always_boots_stopped_when_a_lock_is_in_use():
+    """Trading must not begin before the lock is held, whatever was asked for."""
+    source = (ROOT / "render_start.py").read_text()
+    tail = source[source.index("# Nothing above this line places an order"):]
+    assert 'config["initial_state"] = "stopped"' in tail, (
+        "booting straight into RUNNING would trade before the lock was taken"
+    )
+
+
+def test_nothing_exits_on_the_normal_deploy_path():
+    """A deliberate exit reads as a crash to the platform.
+
+    os._exit is kept for the fallback -- two instances left up by the platform --
+    but must not sit on the path a normal deploy takes.
+    """
+    source = (ROOT / "render_start.py").read_text()
+    body = source[source.index("def _take_lock_then_trade"):
+                  source.index("from freqtrade.main import main as freqtrade_main")]
+
+    # Position in the text would flag stand_down's own definition, which sits
+    # just above its use. What matters is that every exit is inside it.
+    assert body.count("os._exit") == 1, "more than one exit path on startup"
+    inner = body[body.index("def stand_down"):]
+    assert "os._exit" in inner, "the only exit must be the takeover fallback"
