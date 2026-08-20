@@ -1579,18 +1579,20 @@ document.querySelectorAll("#perf-tabs [data-perf]").forEach(b => b.onclick = () 
 async function loadLivePeriod(stake = "") {
   try {
     const d = await api(`/api/live/${livePeriod}`);
-    const rows = (d.data || []).slice().reverse();      // oldest first
+    const rows = d.data || [];
     if (!rows.length) {
       $("daily-chart").innerHTML = '<div class="empty">No closed periods yet</div>';
       $("live-period-rows").innerHTML = '<tr><td colspan="5" class="empty">&mdash;</td></tr>';
       return;
     }
-    $("daily-chart").innerHTML = dailyChart(rows.slice().reverse(), stake || d.stake_currency);
-    $("live-period-rows").innerHTML = rows.slice().reverse().map(r => {
+    // dailyChart reverses internally to get oldest-first, so hand it the
+    // newest-first list freqtrade returns rather than a pre-reversed one.
+    $("daily-chart").innerHTML = dailyChart(d.data || [], stake || d.stake_currency);
+    $("live-period-rows").innerHTML = (d.data || []).map(r => {
       const v = Number(r.abs_profit) || 0;
       const rel = r.rel_profit != null ? Number(r.rel_profit) * 100 : null;
       return `<tr>
-        <td><strong>${esc(r.date || r.week || r.month || "")}</strong></td>
+        <td><strong>${esc(r.date || r.week || r.month || r.period || "")}</strong></td>
         <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
         <td class="r num">${rel == null ? "—" : signed(rel, fmtNum(rel) + "%")}</td>
         <td class="r num muted">${r.trade_count ?? 0}</td>
@@ -1605,9 +1607,14 @@ async function loadLivePeriod(stake = "") {
 async function loadWalletHistory(stake = "") {
   try {
     const d = await api("/api/live/historic_balance");
-    const rows = d.data || d.balances || [];
-    const points = rows
-      .map(r => ({ x: r.date || r.at, y: Number(r.balance ?? r.total ?? r.value) }))
+    // Columnar, not row objects: {columns: ["date","__date_ts","total_quote"],
+    // data: [[...], ...]}. Reading it as objects yielded NaN for every point.
+    const cols = d.columns || [];
+    const iDate = cols.indexOf("date"), iVal = cols.indexOf("total_quote");
+    const points = (d.data || [])
+      .map(row => Array.isArray(row)
+        ? { x: row[iDate], y: Number(row[iVal]) }
+        : { x: row.date, y: Number(row.total_quote ?? row.balance) })
       .filter(p => p.x && isFinite(p.y));
     if (points.length < 2) {
       $("wallet-chart").innerHTML =
