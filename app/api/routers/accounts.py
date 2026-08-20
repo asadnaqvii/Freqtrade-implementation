@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -90,6 +92,47 @@ async def verify_account(account_id: str, body: VerifyRequest, db: UserDB) -> di
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return outcome.as_dict()
+
+
+@router.post("/{account_id}/verify/request")
+async def request_verification(account_id: str, db: UserDB) -> dict:
+    """Ask the bot to run a full check now, and say when it last did.
+
+    The app cannot run this itself: it holds no exchange keys, deliberately, and
+    has no route into the bot's process. So the request is a timestamp on the
+    bot's own row, which its check loop is watching. That keeps the direction of
+    trust the same as everywhere else here -- the bot reads from the database,
+    the database never reaches into the bot.
+    """
+    account = db.select_one("exchange_accounts", columns="id",
+                            filters={"id": f"eq.{account_id}"})
+    if not account:
+        raise HTTPException(status_code=404, detail="no such account")
+
+    bots = db.select("bot_instances", columns="id,name,metadata,last_heartbeat_at",
+                     filters={"account_id": f"eq.{account_id}"},
+                     order="last_heartbeat_at.desc", limit=1)
+    if not bots:
+        raise HTTPException(
+            status_code=409,
+            detail="no bot is linked to this wallet, and only a bot holds the keys "
+                   "needed to check it. Deploy one, or link an existing one.",
+        )
+
+    bot = bots[0]
+    metadata = dict(bot.get("metadata") or {})
+    asked = datetime.now(timezone.utc).isoformat()
+    metadata["verify_requested_at"] = asked
+    db.update("bot_instances", {"metadata": metadata}, filters={"id": f"eq.{bot['id']}"})
+
+    return {
+        "requested_at": asked,
+        "bot": bot.get("name"),
+        "last_ran_at": (bot.get("metadata") or {}).get("verify_ran_at"),
+        "last_heartbeat_at": bot.get("last_heartbeat_at"),
+        "note": "the bot checks for this every 20 seconds; results appear below when it "
+                "has finished.",
+    }
 
 
 @router.get("/{account_id}/balances")

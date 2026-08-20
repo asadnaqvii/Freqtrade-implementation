@@ -499,6 +499,43 @@ def _link_account(client, bot_id, owner_id):
     return None
 
 
+#: How often to look for an on-demand verification request. Small enough that
+#: pressing the button feels like it did something, large enough that it is
+#: three queries a minute.
+VERIFY_POLL_SECONDS = int(_env("VERIFY_POLL_SECONDS", "20") or 20)
+
+
+def _verify_requested(client, bot_id, state) -> bool:
+    """Has the dashboard asked for a check since the last one we ran?"""
+    if not bot_id:
+        return False
+    try:
+        row = client.select_one("bot_instances", columns="metadata",
+                                filters={"id": f"eq.{bot_id}"}) or {}
+        asked = (row.get("metadata") or {}).get("verify_requested_at")
+    except Exception:  # noqa: BLE001 - a missed poll is not worth a log line
+        return False
+    if not asked or asked == state.get("last_request"):
+        return False
+    state["last_request"] = asked
+    return True
+
+
+def _stamp_verify_ran(client, bot_id) -> None:
+    """Record that a check completed, so the page can tell fresh from stale."""
+    if not bot_id:
+        return
+    try:
+        row = client.select_one("bot_instances", columns="metadata",
+                                filters={"id": f"eq.{bot_id}"}) or {}
+        metadata = dict(row.get("metadata") or {})
+        metadata["verify_ran_at"] = datetime.now(timezone.utc).isoformat()
+        client.update("bot_instances", {"metadata": metadata},
+                      filters={"id": f"eq.{bot_id}"})
+    except Exception:  # noqa: BLE001 - the run itself is already recorded
+        pass
+
+
 def _selfcheck_loop(client, account, bot_id, owner_id):
     """Verify our own credentials here, where the keys are, and publish it.
 
@@ -508,7 +545,11 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
     """
     from app.validation import selfcheck
 
-    nonlocal_state = {"ticks": 0}
+    # Seeded from whatever is already on the row, so a request made while the
+    # bot was down does not fire the moment it comes back and then again on its
+    # own schedule.
+    nonlocal_state = {"ticks": 0, "last_request": None}
+    _verify_requested(client, bot_id, nonlocal_state)
     while True:
         try:
             outcome = selfcheck.run(
@@ -522,6 +563,7 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
             )
             if outcome:
                 print(f"self-check: {outcome.status} -- {outcome.summary}", flush=True)
+                _stamp_verify_ran(client, bot_id)
 
             # Reconciliation asks the venue what it actually did with the orders
             # this bot recorded. Hourly rather than every cycle: it is a request
@@ -538,7 +580,22 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
             # Never let this stop the bot trading; a missing result reads as
             # "not measured", which is true.
             print(f"self-check failed: {exc}", flush=True)
-        time.sleep(SELFCHECK_INTERVAL_SECONDS)
+
+        # Sleep in slices so a "verify now" from the dashboard does not wait out
+        # the full interval. The app cannot call this directly -- it holds no
+        # exchange keys and has no route into this process -- so the request
+        # arrives as a timestamp on the bot's own row.
+        waited = 0
+        while waited < SELFCHECK_INTERVAL_SECONDS:
+            time.sleep(VERIFY_POLL_SECONDS)
+            waited += VERIFY_POLL_SECONDS
+            if _verify_requested(client, bot_id, nonlocal_state):
+                print("verification requested from the dashboard; running now", flush=True)
+                # Force the reconciliation branch too: an on-demand check that
+                # skipped the trade-by-trade comparison would answer a different
+                # question from the one that was asked.
+                nonlocal_state["ticks"] = 0
+                break
 
 
 def register_and_heartbeat():

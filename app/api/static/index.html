@@ -658,11 +658,20 @@
     </div>
 
     <div class="card" id="recon-card">
-      <h2>Past trades, checked against the exchange</h2>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Past trades, checked against the exchange</h2>
+        <span style="flex:1"></span>
+        <button class="btn" id="verify-now">Verify now</button>
+      </div>
       <p class="hint">Every order this bot recorded, compared with what the venue says
         actually happened. This is the question a balance check does not ask: partial
         fills booked as complete, orders lost after a crash, and anything traded on the
         account that this bot did not place.</p>
+      <p class="hint">It runs on the bot, because that is where the exchange keys are &mdash;
+        this app has none, on purpose. &ldquo;Verify now&rdquo; leaves a request on the bot's
+        row; it picks it up within about twenty seconds and re-runs the credential,
+        permission, balance and trade-by-trade checks.</p>
+      <p class="ctl-confirm" id="verify-status" hidden></p>
       <div id="recon-summary"><div class="empty">&mdash;</div></div>
       <div id="recon-checks"></div>
       <div class="scroll" id="recon-table" hidden><table><thead><tr>
@@ -1396,10 +1405,15 @@ $("w-add").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
+let reconAccountId = null, latestValidationAt = null;
+const currentAccountId = () => reconAccountId;
+
 async function loadReconciliation(accountId) {
   if (!accountId) return;
+  reconAccountId = accountId;
   try {
     const r = await api(`/api/accounts/${accountId}/reconciliation`);
+    latestValidationAt = r.run?.created_at || null;
     if (!r.run) {
       $("recon-summary").innerHTML = `<div class="empty">${esc(r.note || "Nothing yet")}</div>`;
       $("recon-checks").innerHTML = "";
@@ -1468,7 +1482,10 @@ async function loadWallets() {
       ${a.verification_notes ? `<div class="muted" style="margin-top:7px;font-size:12px">${esc(a.verification_notes)}</div>` : ""}
     </div>`).join("") : '<div class="empty">None connected</div>';
 
-  if (accounts.length) loadReconciliation(accounts[0].id).catch(() => {});
+  if (accounts.length) {
+    reconAccountId = accounts[0].id;
+    loadReconciliation(reconAccountId).catch(() => {});
+  }
 
   document.querySelectorAll("[data-verify]").forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = "Checking…";
@@ -1506,6 +1523,39 @@ function showVerification(out) {
     </div>`).join("");
   $("verify-out").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
+
+// Verification runs on the bot, so the button leaves a request and then watches
+// for a result newer than the one already on screen.
+$("verify-now").onclick = async () => {
+  const account = currentAccountId();
+  if (!account) { toast("Connect a wallet first.", true); return; }
+  const b = $("verify-now");
+  const before = latestValidationAt;
+  b.disabled = true; b.textContent = "Requesting…";
+  $("verify-status").hidden = false;
+  $("verify-status").textContent = "Asked the bot to run a full check. Waiting for it…";
+  try {
+    const r = await api(`/api/accounts/${account}/verify/request`, { method: "POST" });
+    for (let i = 0; i < 20; i++) {
+      await new Promise(done => setTimeout(done, 3000));
+      b.textContent = `Waiting… ${(i + 1) * 3}s`;
+      await loadReconciliation(account).catch(() => {});
+      if (latestValidationAt && latestValidationAt !== before) {
+        $("verify-status").textContent =
+          `Checked ${shortDate(latestValidationAt)} by ${esc(r.bot || "the bot")}.`;
+        break;
+      }
+    }
+    if (latestValidationAt === before) {
+      $("verify-status").textContent =
+        "The bot has not answered yet. It checks for requests every 20 seconds — if it is "
+        + "mid-deploy this can take a minute. The result will appear here when it lands.";
+    }
+  } catch (e) {
+    $("verify-status").textContent = e.message;
+  }
+  b.disabled = false; b.textContent = "Verify now";
+};
 
 // ── bots ────────────────────────────────────────────────────
 async function loadBots() {
