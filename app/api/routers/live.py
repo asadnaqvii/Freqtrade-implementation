@@ -182,8 +182,14 @@ async def candles(
     return _trim_columns(payload)
 
 
+#: Reads that take a period count. Without one freqtrade answers with its own
+#: defaults -- 7 days, 4 weeks, 3 months -- so "profit over time" silently
+#: showed the last week and looked like the bot had no history.
+SCALED_READS = {"daily": 365, "weekly": 260, "monthly": 120}
+
+
 @router.get("/{section}")
-async def section(section: str, db: UserDB) -> dict:
+async def section(section: str, db: UserDB, timescale: int = 0) -> dict:
     """Any single read the bot permits, for panels that refresh on their own."""
     client = _client_for_caller(db)
     if section not in client.READS:
@@ -191,8 +197,11 @@ async def section(section: str, db: UserDB) -> dict:
             status_code=404,
             detail=f"no such section; available: {', '.join(sorted(client.READS))}",
         )
+    params = None
+    if section in SCALED_READS and timescale:
+        params = {"timescale": max(1, min(timescale, SCALED_READS[section]))}
     try:
-        payload = client.get(section)
+        payload = client.get(section, params)
     except BotError as exc:
         raise _handle(exc) from exc
     # freqtrade returns a bare list for some endpoints; keep the envelope
