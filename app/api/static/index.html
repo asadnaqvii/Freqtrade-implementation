@@ -163,6 +163,21 @@
   .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
   .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
 
+  /* Collapsible sections: the heading is the control, so it has to look like one. */
+  .sec-head {
+    display:flex; align-items:center; gap:8px; width:100%; background:none;
+    border:none; border-top:1px solid var(--line-soft); padding:16px 0 6px;
+    font:inherit; font-size:13px; font-weight:600; color:var(--text);
+    cursor:pointer; text-align:left;
+  }
+  .sec-head:hover { color:var(--accent); }
+  .sec-head .caret {
+    display:inline-block; width:9px; flex:none; color:var(--muted);
+    transition:transform .15s ease;
+  }
+  .sec-head[aria-expanded="false"] .caret { transform:rotate(-90deg); }
+  .sec-body[hidden] { display:none; }
+
   .picker { position:relative; }
   .picker input { margin-top:4px; }
   .options {
@@ -406,30 +421,49 @@
         <button class="btn" id="bt-refresh">Refresh</button></div>
     </div>
     <div class="card" id="bt-detail" hidden>
-      <h2>Result detail</h2>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Result detail</h2>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn tiny" id="bt-collapse-all">Collapse all</button>
+        <button class="btn tiny" id="bt-detail-close">Close</button>
+      </div>
       <p class="hint" id="bt-detail-title"></p>
 
       <div id="bt-coverage"></div>
       <div class="kpis" id="bt-metrics" style="margin-bottom:20px"></div>
 
-      <h3 style="margin:22px 0 4px;font-size:13px">Account balance</h3>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="account-balance"><span class="caret">&#9660;</span>Account balance</button>
+      <div class="sec-body" id="sec-account-balance">
       <p class="hint">Every candle of the run, not just the trades.</p>
       <div id="bt-equity"><div class="empty">&mdash;</div></div>
 
-      <h3 style="margin:22px 0 4px;font-size:13px">How far below the peak</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="how-far-below-the-peak"><span class="caret">&#9660;</span>How far below the peak</button>
+      <div class="sec-body" id="sec-how-far-below-the-peak">
       <p class="hint">The same period, drawn as depth under the high-water mark. This is the
         part you would have had to sit through.</p>
       <div id="bt-drawdown"></div>
 
-      <h3 style="margin:22px 0 4px;font-size:13px">Month by month</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="month-by-month"><span class="caret">&#9660;</span>Month by month</button>
+      <div class="sec-body" id="sec-month-by-month">
       <div id="bt-heatmap"><div class="empty">&mdash;</div></div>
 
-      <h3 style="margin:22px 0 8px;font-size:13px">Is this result worth believing?</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="is-this-result-worth-believing"><span class="caret">&#9660;</span>Is this result worth believing?</button>
+      <div class="sec-body" id="sec-is-this-result-worth-believing">
       <p class="hint">Separate question from whether it made money. A backtest always
         produces a number; this says whether the test was capable of telling you anything.</p>
       <div id="bt-verdict"><div class="empty">Pick a result below</div></div>
 
-      <h3 style="margin:22px 0 8px;font-size:13px">Return by period</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="return-by-period"><span class="caret">&#9660;</span>Return by period</button>
+      <div class="sec-body" id="sec-return-by-period">
       <div class="chips" id="bt-period">
         <button class="btn tiny" data-period="day">Daily</button>
         <button class="btn tiny" data-period="week">Weekly</button>
@@ -448,7 +482,10 @@
         <tr><td colspan="8" class="empty">&mdash;</td></tr>
       </tbody></table></div>
 
-      <h3 style="margin:26px 0 8px;font-size:13px">By pair</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="by-pair"><span class="caret">&#9660;</span>By pair</button>
+      <div class="sec-body" id="sec-by-pair">
       <div class="scroll"><table><thead><tr>
         <th>Pair</th><th class="r">Trades</th><th class="r">W/L</th>
         <th class="r">Profit</th><th class="r">%</th><th></th>
@@ -470,7 +507,10 @@
         </div>
       </div>
 
-      <h3 style="margin:26px 0 4px;font-size:13px">Trades</h3>
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="trades"><span class="caret">&#9660;</span>Trades</button>
+      <div class="sec-body" id="sec-trades">
       <p class="hint" id="bt-trades-note"></p>
       <div class="scroll"><table><thead><tr>
         <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Held</th>
@@ -479,6 +519,7 @@
       </tr></thead><tbody id="bt-trades">
         <tr><td colspan="9" class="empty">&mdash;</td></tr>
       </tbody></table></div>
+      </div>
     </div>
     <div class="card">
       <h2>Results</h2>
@@ -1537,6 +1578,49 @@ $("bt-history").onclick = async () => {
 
 let currentRun = null, currentPeriod = "month";
 
+// ── collapsible detail sections ─────────────────────────────
+// The panel is long by design -- it now carries every metric, four charts and
+// three tables. Which parts matter depends on the question being asked, so the
+// choice is remembered rather than reset on every result.
+const SEC_KEY = "bt.collapsed";
+const collapsed = new Set(JSON.parse(localStorage.getItem(SEC_KEY) || "[]"));
+
+function applySections() {
+  document.querySelectorAll(".sec-head").forEach(head => {
+    const shut = collapsed.has(head.dataset.sec);
+    head.setAttribute("aria-expanded", shut ? "false" : "true");
+    const body = $(`sec-${head.dataset.sec}`);
+    if (body) body.hidden = shut;
+  });
+  const anyOpen = [...document.querySelectorAll(".sec-head")]
+    .some(h => h.getAttribute("aria-expanded") === "true");
+  const toggle = $("bt-collapse-all");
+  if (toggle) toggle.textContent = anyOpen ? "Collapse all" : "Expand all";
+}
+
+document.querySelectorAll(".sec-head").forEach(head => head.onclick = () => {
+  const key = head.dataset.sec;
+  collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+  localStorage.setItem(SEC_KEY, JSON.stringify([...collapsed]));
+  applySections();
+});
+
+$("bt-collapse-all").onclick = () => {
+  const heads = [...document.querySelectorAll(".sec-head")];
+  const anyOpen = heads.some(h => h.getAttribute("aria-expanded") === "true");
+  collapsed.clear();
+  if (anyOpen) heads.forEach(h => collapsed.add(h.dataset.sec));
+  localStorage.setItem(SEC_KEY, JSON.stringify([...collapsed]));
+  applySections();
+};
+
+$("bt-detail-close").onclick = () => {
+  $("bt-detail").hidden = true;
+  currentRun = null;
+};
+
+applySections();
+
 document.querySelectorAll("#bt-period [data-period]").forEach(b => b.onclick = () => {
   document.querySelectorAll("#bt-period [data-period]").forEach(x => x.classList.remove("active"));
   b.classList.add("active");
@@ -1922,7 +2006,7 @@ async function loadRunDetail(runId, run) {
 
   // Trades: the distribution, the exit reasons, and the last hundred.
   try {
-    const { trades } = await api(`/api/backtests/${runId}/trades?limit=2000`);
+    const { trades } = await api(`/api/backtests/${runId}/trades?limit=5000`);
     const profits = trades.map(t => Number(t.profit_abs) || 0);
     $("bt-dist").innerHTML = histogram(profits);
 

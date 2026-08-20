@@ -520,3 +520,73 @@ def test_a_timeout_still_raises_rather_than_hanging():
     with pytest.raises(BacktestError, match="did not finish"):
         _run([sys.executable, "-c", "import time; time.sleep(30)"],
              cwd=Path("."), timeout=3)
+
+
+# ---------------------------------------------------------------------------
+# PostgREST's per-response ceiling
+# ---------------------------------------------------------------------------
+
+class PagedDB:
+    """A client that behaves like PostgREST: never more than 1000 rows."""
+
+    CEILING = 1000
+
+    def __init__(self, total):
+        self.rows = [{"n": i} for i in range(total)]
+        self.calls = 0
+
+    def select(self, table, *, columns="*", filters=None, order=None, limit=None, offset=0):
+        self.calls += 1
+        take = min(limit or self.CEILING, self.CEILING)
+        return self.rows[offset:offset + take]
+
+
+def test_paging_gets_past_the_thousand_row_ceiling():
+    """A 2889-point equity curve came back as its first 1000 points.
+
+    The chart then drew a complete-looking line over 2018-2021 for a run that
+    ended in 2026 -- truthful about the points it had, wrong about the period.
+    """
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(2889)
+    got = _all_rows(db, "backtest_equity_curve", columns="*", filters={}, order="at.asc",
+                    cap=6000)
+    assert len(got) == 2889
+    assert got[0]["n"] == 0 and got[-1]["n"] == 2888
+    assert db.calls == 3
+
+
+def test_paging_stops_at_the_cap():
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(50_000)
+    got = _all_rows(db, "t", columns="*", filters={}, order="a", cap=2500)
+    assert len(got) == 2500
+
+
+def test_a_short_result_costs_one_request():
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(120)
+    assert len(_all_rows(db, "t", columns="*", filters={}, order="a")) == 120
+    assert db.calls == 1
+
+
+def test_equity_downsample_actually_respects_its_cap():
+    """max(1, len // max_points) is 1 for anything under twice the cap."""
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    stamps = pd.date_range("2018-01-01", periods=2889, freq="D", tz="UTC")
+    wallet = pd.DataFrame({"date": stamps, "total_quote": [1000.0 + i for i in range(2889)]})
+    rows = BacktestExport({"strategy": {"S": {}}}, wallet=wallet).equity_rows("r", max_points=1500)
+    assert len(rows) <= 1500, f"stored {len(rows)} points for a 1500 cap"
+    # And the shipped default keeps a long run at full resolution.
+    from app.backtest.parser import MAX_EQUITY_POINTS
+
+    assert MAX_EQUITY_POINTS >= 5000
+    # The ends must survive downsampling or the chart's range shifts.
+    assert rows[0]["at"].startswith("2018-01-01")
+    assert rows[-1]["at"].startswith(str(stamps[-1].date()))

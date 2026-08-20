@@ -151,54 +151,68 @@ async def get_run(run_id: str, db: UserDB) -> dict:
 
 @router.get("/{run_id}/trades")
 async def get_trades(run_id: str, db: UserDB, limit: int = 500, offset: int = 0) -> dict:
-    return {
-        "trades": db.select(
-            "backtest_trades",
-            filters={"run_id": f"eq.{run_id}"},
-            order="open_date.asc",
-            limit=min(limit, 2000),
-            offset=offset,
-        )
-    }
+    """Trades for a run, paged past PostgREST's ceiling when more are asked for.
+
+    The distribution chart and the exit-reason breakdown are computed from this,
+    so a truncated answer silently describes only the first part of the run.
+    """
+    wanted = max(1, min(limit, 20000))
+    if wanted <= POSTGREST_PAGE and offset:
+        rows = db.select("backtest_trades", filters={"run_id": f"eq.{run_id}"},
+                         order="open_date.asc", limit=wanted, offset=offset)
+    else:
+        rows = _all_rows(db, "backtest_trades", columns="*",
+                         filters={"run_id": f"eq.{run_id}"},
+                         order="open_date.asc", cap=wanted + offset)[offset:]
+    return {"trades": rows}
 
 
 @router.get("/{run_id}/equity")
 async def get_equity(run_id: str, db: UserDB) -> dict:
+    """The whole curve, not the first thousand points of it."""
     return {
-        "equity": db.select(
-            "backtest_equity_curve",
+        "equity": _all_rows(
+            db, "backtest_equity_curve",
             columns="at,balance,drawdown_abs,drawdown_pct",
             filters={"run_id": f"eq.{run_id}"},
             order="at.asc",
-            limit=2000,
+            cap=8000,
         )
     }
 
 
-def _all_trades(db, run_id: str) -> list[dict]:
-    """Every trade in a run, paged out of PostgREST.
+#: PostgREST answers at most this many rows per request whatever `limit` says.
+#: Asking for 2000 quietly returns the first 1000, which is the worst kind of
+#: wrong: an equity chart drawn from it looks complete and covers half the run.
+POSTGREST_PAGE = 1000
 
-    PostgREST caps a response, and a multi-year run over several pairs can pass
-    a few thousand trades. Paging here rather than truncating keeps the period
-    totals correct -- a breakdown computed from a truncated set is wrong in a way
-    that is very hard to notice.
-    """
+
+def _all_rows(db, table: str, *, columns: str, filters: dict, order: str,
+              cap: int = 20000) -> list[dict]:
+    """Every row, paged past PostgREST's per-response ceiling."""
     out: list[dict] = []
-    page = 1000
-    while True:
-        rows = db.select(
-            "backtest_trades",
-            columns="pair,close_date,open_date,profit_abs,profit_ratio,stake_amount,"
-                    "trade_duration_min,exit_reason",
-            filters={"run_id": f"eq.{run_id}"},
-            order="close_date.asc",
-            limit=page,
-            offset=len(out),
-        )
+    while len(out) < cap:
+        rows = db.select(table, columns=columns, filters=filters, order=order,
+                         limit=POSTGREST_PAGE, offset=len(out))
         out.extend(rows)
-        if len(rows) < page or len(out) >= 20000:
+        if len(rows) < POSTGREST_PAGE:
             break
-    return out
+    return out[:cap]
+
+
+def _all_trades(db, run_id: str) -> list[dict]:
+    """Every trade in a run.
+
+    Paging rather than truncating keeps the period totals correct -- a breakdown
+    computed from a truncated set is wrong in a way that is very hard to notice.
+    """
+    return _all_rows(
+        db, "backtest_trades",
+        columns="pair,close_date,open_date,profit_abs,profit_ratio,stake_amount,"
+                "trade_duration_min,exit_reason",
+        filters={"run_id": f"eq.{run_id}"},
+        order="close_date.asc",
+    )
 
 
 @router.get("/{run_id}/breakdown")

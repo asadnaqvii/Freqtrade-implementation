@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import logging
 import zipfile
 from datetime import datetime, timezone
@@ -24,8 +25,10 @@ from typing import Any, Iterator
 log = logging.getLogger(__name__)
 
 # The wallet series has one row per candle per currency, which for a 90-day 5m
-# backtest is ~50k rows. Storing all of them buys nothing a chart can show.
-MAX_EQUITY_POINTS = 1500
+# backtest is ~50k rows. This is the resolution the curve is stored at -- more
+# than a chart can draw at 860px wide, deliberately: it makes the crosshair land
+# on real observations and leaves room to zoom later without re-running.
+MAX_EQUITY_POINTS = 5000
 
 
 class ParseError(RuntimeError):
@@ -289,7 +292,10 @@ class BacktestExport:
             drawdown_abs = peak - series["total_quote"]
             trough_index = int(drawdown_abs.values.argmax()) if len(drawdown_abs) else 0
 
-            step = max(1, len(series) // max_points)
+            # Ceiling, not floor: len // max_points gives 1 for anything under
+            # twice the cap, so a 2889-point run stored all 2889 and blew past
+            # the limit this was supposed to enforce.
+            step = max(1, math.ceil(len(series) / max_points))
             keep = set(range(0, len(series), step))
             keep.add(0)
             keep.add(len(series) - 1)
