@@ -109,6 +109,25 @@ async def section(section: str, db: UserDB) -> dict:
     return payload if isinstance(payload, dict) else {"data": payload}
 
 
+class ControlRequest(BaseModel):
+    action: str = Field(pattern="^(start|stop|stopentry|reload_config)$")
+
+
+@router.post("/control")
+async def control(body: ControlRequest, user: CurrentUser, db: UserDB) -> dict:
+    """Start, stop, stop-entry or reload the bot.
+
+    Logged with who asked. "Why did the bot stop overnight" is a question that
+    gets asked later and deserves an answer that is not a shrug.
+    """
+    log.warning("bot control %s requested by %s", body.action, user.profile_id)
+    try:
+        result = _client_for_caller(db).act(body.action)
+    except BotError as exc:
+        raise _handle(exc) from exc
+    return {"result": result}
+
+
 @router.post("/forceexit")
 async def force_exit(body: ForceExitRequest, user: CurrentUser, db: UserDB) -> dict:
     """Close an open position now, at market unless told otherwise.

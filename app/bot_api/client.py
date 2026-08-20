@@ -65,15 +65,25 @@ class BotClient:
         "trades",          # closed trade history
         "whitelist",       # pairs currently tradable
         "blacklist",       # pairs excluded
-        "locks",           # pairs locked after a loss
         "logs",            # recent bot log lines
+        "locks",           # pairs the strategy has locked after a loss
         "sysinfo",         # cpu/ram of the bot process
         "version",
         "health",
     }
 
-    #: State-changing endpoints. One entry, on purpose -- see the module docstring.
-    ACTIONS = {"forceexit"}
+    #: State-changing endpoints. Each one is here because a person watching a
+    #: live bot needs it, and the list is short so that stays checkable.
+    #:
+    #: stopentry is the most important of them: it stops the bot opening
+    #: anything new while still managing what it holds, which is what you
+    #: actually want when a strategy starts behaving oddly at 3am. Stopping
+    #: outright abandons open positions to the market.
+    #:
+    #: Still absent: forceenter. Closing a position you hold is a control a
+    #: dashboard should offer; opening one from a web page is a different kind
+    #: of power, and entries are the strategy's job.
+    ACTIONS = {"forceexit", "start", "stop", "stopentry", "reload_config"}
 
     def __init__(self, base_url: str, username: str | None, password: str | None) -> None:
         self.base_url = base_url.rstrip("/")

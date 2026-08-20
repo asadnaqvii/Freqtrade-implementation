@@ -60,22 +60,40 @@ def test_an_unlisted_read_is_refused_before_any_request(client):
     assert bot.transport.seen == [], "it must refuse without touching the network"
 
 
-@pytest.mark.parametrize("path", ["start", "stop", "forceenter", "forcebuy", "reload_config"])
-def test_dangerous_endpoints_are_not_reachable(client, path):
+@pytest.mark.parametrize("path", ["forceenter", "forcebuy", "forcesell",
+                                  "hyperopt", "backtest", "delete_lock"])
+def test_opening_a_position_from_the_app_stays_impossible(client, path):
+    """The line the allowlist exists to hold.
+
+    Controls have been added since -- stop, stopentry, reload -- because someone
+    watching a live bot needs them. Entering a trade is not one of those: that is
+    the strategy's job, and a web page that can open positions is a different
+    kind of exposure from one that can close them.
+    """
     bot = client()
     with pytest.raises(BotError):
         bot.get(path)
     with pytest.raises(BotError):
         bot.act(path)
-    assert bot.transport.seen == []
+    assert bot.transport.seen == [], "it must refuse without touching the network"
 
 
-def test_forceenter_is_deliberately_absent():
-    # Closing a position you hold is a dashboard control. Opening one from a web
-    # page is a different kind of power, and entries are the strategy's job.
-    assert "forceenter" not in BotClient.ACTIONS
-    assert "forceenter" not in BotClient.READS
-    assert BotClient.ACTIONS == {"forceexit"}
+def test_the_action_list_is_exactly_what_was_intended():
+    # Written out rather than counted, so widening it is a visible diff and not
+    # a number that quietly goes up.
+    assert BotClient.ACTIONS == {
+        "forceexit",       # close a position you already hold
+        "stopentry",       # stop opening new ones, keep managing the rest
+        "stop",            # halt entirely
+        "start",           # resume
+        "reload_config",   # pick up a changed config
+    }
+    assert "forceenter" not in BotClient.ACTIONS | BotClient.READS
+
+
+def test_stopentry_is_available_because_it_is_the_safe_stop():
+    # Stopping outright leaves open positions unmanaged; stopentry does not.
+    assert "stopentry" in BotClient.ACTIONS
 
 
 def test_reads_and_actions_do_not_overlap():
