@@ -102,7 +102,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_desired_state(monkeypatch, *, row=None, boom=None, env=None):
+def load_desired_state(monkeypatch, *, row=None, boom=None, env=None, dry_run=True):
     """Compile just _desired_state out of render_start.
 
     Importing the module would configure and launch a bot, so the one function
@@ -132,6 +132,7 @@ def load_desired_state(monkeypatch, *, row=None, boom=None, env=None):
     namespace = {
         "_env": lambda name, default=None: values.get(name, default),
         "bot_name": "freqtrade-bot",
+        "dry_run": dry_run,
         "print": lambda *a, **k: None,
     }
     exec(compile(source[start:end], "render_start.py", "exec"), namespace)
@@ -140,14 +141,14 @@ def load_desired_state(monkeypatch, *, row=None, boom=None, env=None):
 
 @pytest.mark.parametrize("state", ["running", "paused", "stopped"])
 def test_the_bot_boots_into_the_state_the_dashboard_asked_for(monkeypatch, state):
-    fn = load_desired_state(monkeypatch, row={"metadata": {"desired_state": state}})
+    fn = load_desired_state(monkeypatch, row={"metadata": {"desired_state": state}, "trading_mode": "dry_run"})
     assert fn() == state
 
 
 def test_a_bot_that_was_never_stopped_runs(monkeypatch):
-    assert load_desired_state(monkeypatch, row={"metadata": {}})() == "running"
+    assert load_desired_state(monkeypatch, row={"metadata": {}, "trading_mode": "dry_run"})() == "running"
     assert load_desired_state(monkeypatch, row=None)() == "running"
-    assert load_desired_state(monkeypatch, row={"metadata": None})() == "running"
+    assert load_desired_state(monkeypatch, row={"metadata": None, "trading_mode": "dry_run"})() == "running"
 
 
 def test_an_unreachable_control_plane_does_not_stop_the_bot_trading(monkeypatch):
@@ -160,20 +161,73 @@ def test_a_value_freqtrade_would_reject_is_ignored(monkeypatch):
     # An invalid initial_state fails config validation and the bot never boots,
     # so a corrupted row must not be able to keep it down.
     for junk in ["STOPPED", "halted", "", 7, None, {"a": 1}]:
-        fn = load_desired_state(monkeypatch, row={"metadata": {"desired_state": junk}})
+        fn = load_desired_state(monkeypatch, row={"metadata": {"desired_state": junk}, "trading_mode": "dry_run"})
         assert fn() == "running", junk
 
 
 def test_an_env_override_wins_over_the_database(monkeypatch):
     """The way back up when the dashboard is the thing that is broken."""
     fn = load_desired_state(monkeypatch,
-                            row={"metadata": {"desired_state": "stopped"}},
+                            row={"metadata": {"desired_state": "stopped"}, "trading_mode": "dry_run"},
                             env={"FREQTRADE_INITIAL_STATE": "running"})
     assert fn() == "running"
 
 
 def test_a_junk_override_falls_through_to_the_database(monkeypatch):
     fn = load_desired_state(monkeypatch,
-                            row={"metadata": {"desired_state": "stopped"}},
+                            row={"metadata": {"desired_state": "stopped"}, "trading_mode": "dry_run"},
                             env={"FREQTRADE_INITIAL_STATE": "yes"})
     assert fn() == "stopped"
+
+
+def test_switching_between_dry_run_and_live_comes_up_stopped(monkeypatch):
+    """The boot worth refusing.
+
+    freqtrade's trades table does not record which mode wrote a row. A live bot
+    that inherits a dry run's open position will try to sell coins it never
+    bought, fail, and retry -- so the mode change itself is the signal to hold,
+    whatever the dashboard last asked for.
+    """
+    fn = load_desired_state(
+        monkeypatch,
+        row={"metadata": {"desired_state": "running"}, "trading_mode": "dry_run"},
+        dry_run=False,
+    )
+    assert fn() == "stopped"
+
+
+def test_it_holds_going_the_other_way_too(monkeypatch):
+    # live -> dry_run leaves real open positions in a database a paper bot would
+    # then "close" without touching the exchange.
+    fn = load_desired_state(
+        monkeypatch,
+        row={"metadata": {"desired_state": "running"}, "trading_mode": "live"},
+        dry_run=True,
+    )
+    assert fn() == "stopped"
+
+
+@pytest.mark.parametrize("mode,dry", [("dry_run", True), ("live", False)])
+def test_an_unchanged_mode_does_not_hold(monkeypatch, mode, dry):
+    fn = load_desired_state(
+        monkeypatch,
+        row={"metadata": {"desired_state": "running"}, "trading_mode": mode},
+        dry_run=dry,
+    )
+    assert fn() == "running"
+
+
+def test_a_first_boot_with_no_recorded_mode_is_not_a_mode_change(monkeypatch):
+    fn = load_desired_state(monkeypatch, row={"metadata": {}}, dry_run=False)
+    assert fn() == "running"
+
+
+def test_the_env_override_still_wins_over_the_mode_guard(monkeypatch):
+    """Deliberate is deliberate: the way to say "yes, I know" without SQL."""
+    fn = load_desired_state(
+        monkeypatch,
+        row={"metadata": {}, "trading_mode": "dry_run"},
+        dry_run=False,
+        env={"FREQTRADE_INITIAL_STATE": "running"},
+    )
+    assert fn() == "running"

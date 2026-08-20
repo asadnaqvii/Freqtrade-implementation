@@ -88,9 +88,24 @@ def _desired_state():
         from app.core.supabase import SupabaseClient
 
         row = SupabaseClient.service().select_one(
-            "bot_instances", columns="metadata", filters={"name": f"eq.{bot_name}"}
+            "bot_instances", columns="metadata,trading_mode",
+            filters={"name": f"eq.{bot_name}"},
         ) or {}
-        state = (row.get("metadata") or {}).get("desired_state")
+        metadata = row.get("metadata") or {}
+
+        # Switching between dry-run and live against a shared database is the one
+        # boot worth refusing. freqtrade's trades table does not say which mode
+        # wrote a row, so a live bot inheriting a dry run's open position will
+        # try to sell coins it never bought -- and keep retrying. Come up
+        # stopped and let a person look first.
+        mode = "dry_run" if dry_run else "live"
+        was = row.get("trading_mode")
+        if was and was != mode:
+            print(f"MODE CHANGE {was} -> {mode}: starting stopped. Clear ft_main of the "
+                  f"other mode's trades, then start the bot from the dashboard.", flush=True)
+            return "stopped"
+
+        state = metadata.get("desired_state")
         if state in ("running", "paused", "stopped"):
             if state != "running":
                 print(f"starting {state}: the dashboard last asked for this", flush=True)
