@@ -94,6 +94,36 @@
   .lock b { font-size:12.5px; }
   .lock .why { color:var(--muted); font-size:11.5px; flex:1; min-width:90px; }
   .lock .until { font-size:11.5px; color:var(--warn); font-variant-numeric:tabular-nums; }
+  /* The Live view's two columns. FreqUI keeps its pane at a fixed narrow width
+     and lets the chart take the rest; below 1150px there is not enough room for
+     both, so they stack -- main column first, because the chart is the point. */
+  .livegrid { display:grid; gap:16px; align-items:start; }
+  .livepane, .livemain { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .livepane .card, .livemain .card { margin:0; }
+  @media (min-width:1150px) {
+    .livegrid { grid-template-columns:minmax(290px, 330px) minmax(0, 1fr); }
+    /* Long panels in a narrow column would otherwise push the chart's whole
+       column down past the fold. */
+    /* Deliberately not sticky: pinning the pane needs a height cap, and the cap
+       slices a card in half the moment the pane grows -- which one more held
+       currency or one more locked pair does. */
+    .livepane { align-self:start; }
+  }
+  @media (max-width:1149px) {
+    .livepane { order:2; }
+    .livemain { order:1; }
+  }
+
+  .holding {
+    display:grid; grid-template-columns:1fr auto; gap:0 10px;
+    padding:8px 0; border-top:1px solid var(--line-soft);
+  }
+  .holding:first-child { border-top:none; padding-top:0; }
+  .holding b { font-size:13px; }
+  .holding .tot { font-size:13px; font-variant-numeric:tabular-nums; }
+  .holding .split { grid-column:1 / -1; font-size:11px; color:var(--muted);
+                    font-variant-numeric:tabular-nums; }
+
   .chip-pair.locked {
     background:var(--panel-2); border-color:var(--line); color:var(--muted);
     text-decoration:line-through; text-decoration-thickness:1px;
@@ -160,6 +190,8 @@
   .dot.idle{background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
 
   .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:12px; margin-bottom:16px; }
+  /* Eight tiles: let them fill four to a row rather than seven and a stray. */
+  @media (min-width:1000px) { .kpis { grid-template-columns:repeat(4, 1fr); } }
   .kpi {
     background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
     padding:14px 16px; box-shadow:var(--shadow); min-width:0;
@@ -641,6 +673,7 @@
     </div>
 
     <div class="statusbar" id="live-status"></div>
+
     <div class="actions" style="margin:-6px 0 16px">
       <button class="btn tiny" data-ctl="start">Start</button>
       <button class="btn tiny" data-ctl="stopentry">Stop opening new trades</button>
@@ -649,163 +682,170 @@
       <span class="muted" style="font-size:12px;align-self:center">Stopping outright
         leaves open positions unmanaged; stopping entries keeps managing them.</span>
     </div>
+
     <div class="kpis" id="live-kpis"></div>
 
-    <div class="card">
-      <h2>Open positions</h2>
-      <p class="hint">Priced live from the exchange. Profit here moves with the market &mdash;
-        it is what you would get closing right now, not what the position cost.</p>
-      <div class="scroll"><table><thead><tr>
-        <th>Pair</th><th>Opened</th><th>Held</th><th class="r">Stake</th><th class="r">Entry</th>
-        <th class="r">Now</th><th class="r">Profit</th><th class="r">%</th><th>Entry tag</th><th></th>
-      </tr></thead><tbody id="pos-rows">
-        <tr><td colspan="10" class="empty">Nothing open</td></tr>
-      </tbody></table></div>
-    </div>
+    <!-- FreqUI splits this view in two: a narrow pane of panels beside the
+         chart. Same split here -- the pane holds what still reads at 320px,
+         the main column everything that needs the width. -->
+    <div class="livegrid">
+      <aside class="livepane">
+        <div class="card">
+          <h2>Wallet</h2>
+          <p class="hint">What the exchange says you hold.</p>
+          <div id="bal-rows"><div class="empty">&mdash;</div></div>
+        </div>
 
-    <div class="card">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <h2 style="margin:0">Price and signals</h2>
-        <span class="mono muted" id="candle-title" style="font-size:12px"></span>
-        <span style="flex:1"></span>
-        <select id="candle-pair" style="width:auto;min-width:150px"></select>
-        <select id="candle-limit" style="width:auto">
-          <option value="200">200 candles</option>
-          <option value="500" selected>500 candles</option>
-          <option value="1000">1000 candles</option>
-          <option value="1500">1500 candles</option>
-        </select>
-      </div>
-      <p class="hint">The strategy's own dataframe, straight from the running bot &mdash; so the
-        signals drawn here are the ones it actually computed. A triangle is an entry signal and a
-        cross an exit signal; the filled circles are trades that really happened, and the shaded
-        band is the time a position was held. A signal with no circle under it is one the bot
-        chose not to act on, usually for want of a free slot or the stake to fill it.</p>
-      <div id="candle-box"><div class="empty">&mdash;</div></div>
-      <div class="candle-key" id="candle-key" hidden>
-        <span><i class="k-tri"></i>Entry signal</span>
-        <span><i class="k-x"></i>Exit signal</span>
-        <span><i class="k-dot pos"></i>Entry fill</span>
-        <span><i class="k-dot neg"></i>Exit fill</span>
-        <span><i class="k-band"></i>Position held</span>
-      </div>
-      <p class="hint" id="candle-meta" style="margin:10px 0 0"></p>
-    </div>
+        <div class="card">
+          <h2>Pairs the bot is watching</h2>
+          <p class="hint">The whitelist as the pairlist filters currently leave it.</p>
+          <div id="whitelist-box"><div class="empty">&mdash;</div></div>
+          <h3 class="sub">Locked out right now</h3>
+          <p class="hint">Barred by the strategy after a loss. Still whitelisted, still not
+            traded &mdash; usually the answer to &ldquo;why did it skip that signal&rdquo;.</p>
+          <div id="locks-box"><div class="empty">&mdash;</div></div>
+        </div>
 
-    <div class="card">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <h2 style="margin:0">Profit over time</h2>
-        <span class="spacer" style="flex:1"></span>
-        <div class="chips" id="live-period">
-          <button class="btn tiny active" data-lp="daily">Days</button>
-          <button class="btn tiny" data-lp="weekly">Weeks</button>
-          <button class="btn tiny" data-lp="monthly">Months</button>
+        <div class="card">
+          <h2>Why trades closed</h2>
+          <p class="hint">Mostly stop-loss means the strategy is being stopped out, not exiting.</p>
+          <div id="exit-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
+        </div>
+
+
+      </aside>
+
+      <div class="livemain">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Price and signals</h2>
+            <span class="mono muted" id="candle-title" style="font-size:12px"></span>
+            <span style="flex:1"></span>
+            <select id="candle-pair" style="width:auto;min-width:150px"></select>
+            <select id="candle-limit" style="width:auto">
+              <option value="200">200 candles</option>
+              <option value="500" selected>500 candles</option>
+              <option value="1000">1000 candles</option>
+              <option value="1500">1500 candles</option>
+            </select>
+          </div>
+          <p class="hint">The strategy's own dataframe, straight from the running bot &mdash; so the
+            signals drawn here are the ones it actually computed. A triangle is an entry signal and a
+            cross an exit signal; the filled circles are trades that really happened, and the shaded
+            band is the time a position was held. A signal with no circle under it is one the bot
+            chose not to act on, usually for want of a free slot or the stake to fill it.</p>
+          <div id="candle-box"><div class="empty">&mdash;</div></div>
+          <div class="candle-key" id="candle-key" hidden>
+            <span><i class="k-tri"></i>Entry signal</span>
+            <span><i class="k-x"></i>Exit signal</span>
+            <span><i class="k-dot pos"></i>Entry fill</span>
+            <span><i class="k-dot neg"></i>Exit fill</span>
+            <span><i class="k-band"></i>Position held</span>
+          </div>
+          <p class="hint" id="candle-meta" style="margin:10px 0 0"></p>
+        </div>
+
+        <div class="card">
+          <h2>Open positions</h2>
+          <p class="hint">Priced live from the exchange. Profit here moves with the market &mdash;
+            it is what you would get closing right now, not what the position cost.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Pair</th><th>Opened</th><th>Held</th><th class="r">Stake</th><th class="r">Entry</th>
+            <th class="r">Now</th><th class="r">Profit</th><th class="r">%</th><th>Entry tag</th><th></th>
+          </tr></thead><tbody id="pos-rows">
+            <tr><td colspan="10" class="empty">Nothing open</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Profit over time</h2>
+            <span class="spacer" style="flex:1"></span>
+            <div class="chips" id="live-period">
+              <button class="btn tiny active" data-lp="daily">Days</button>
+              <button class="btn tiny" data-lp="weekly">Weeks</button>
+              <button class="btn tiny" data-lp="monthly">Months</button>
+            </div>
+          </div>
+          <p class="hint">Bars are each period's realised profit; the line is the running
+            total across them.</p>
+          <div id="daily-chart"><div class="empty">No closed periods yet</div></div>
+          <div class="scroll" style="margin-top:12px"><table><thead><tr>
+            <th>Period</th><th class="r">Profit</th><th class="r">%</th>
+            <th class="r">Trades</th><th class="r">Balance after</th>
+          </tr></thead><tbody id="live-period-rows">
+            <tr><td colspan="5" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Wallet over time</h2>
+          <p class="hint">What the account has actually been worth, as the bot recorded it.</p>
+          <div id="wallet-chart"><div class="empty">&mdash;</div></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Performance</h2>
+            <span class="spacer" style="flex:1"></span>
+            <div class="chips" id="perf-tabs">
+              <button class="btn tiny active" data-perf="performance">By pair</button>
+              <button class="btn tiny" data-perf="entries">By entry tag</button>
+              <button class="btn tiny" data-perf="exits">By exit reason</button>
+              <button class="btn tiny" data-perf="mix_tags">By entry + exit</button>
+            </div>
+          </div>
+          <p class="hint" id="perf-hint">Which pairs actually made money.</p>
+          <div class="scroll"><table><thead><tr>
+            <th id="perf-col">Pair</th><th class="r">Profit %</th>
+            <th class="r">Profit</th><th class="r">Trades</th><th></th>
+          </tr></thead><tbody id="perf-rows">
+            <tr><td colspan="5" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Closed trades</h2>
+          <p class="hint">The bot's own list, as it holds it in memory.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Entry</th><th class="r">Exit</th>
+            <th class="r">Profit</th><th class="r">%</th><th>Reason</th>
+          </tr></thead><tbody id="closed-rows">
+            <tr><td colspan="8" class="empty">No closed trades</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Trade history in the database</h2>
+          <p class="hint">The same trades read from Postgres instead of from the bot. This is the
+            copy that survives a redeploy, so it is the one to trust when the two disagree &mdash;
+            and the only one still here when the bot is down.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Pair</th><th>Opened</th><th class="r">Amount</th><th class="r">Entry</th>
+            <th class="r">Exit</th><th class="r">Profit</th><th>Reason</th>
+          </tr></thead><tbody id="trade-rows">
+            <tr><td colspan="7" class="empty">No trades</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Registered bots</h2>
+          <p class="hint">From the database rather than the bot, so a bot that has stopped answering
+            still appears here &mdash; marked stale, which is the useful thing to know.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Name</th><th>Health</th><th>Exchange</th><th>Strategy</th><th>Mode</th>
+            <th class="r">Open</th><th>Last seen</th>
+          </tr></thead><tbody id="bot-rows">
+            <tr><td colspan="7" class="empty">No bots registered</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Bot log</h2>
+          <p class="hint">The last few hundred lines, straight from the running process.</p>
+          <pre id="bot-log" class="muted">Loading&hellip;</pre>
         </div>
       </div>
-      <p class="hint">Bars are each period's realised profit; the line is the running
-        total across them.</p>
-      <div id="daily-chart"><div class="empty">No closed periods yet</div></div>
-      <div class="scroll" style="margin-top:12px"><table><thead><tr>
-        <th>Period</th><th class="r">Profit</th><th class="r">%</th>
-        <th class="r">Trades</th><th class="r">Balance after</th>
-      </tr></thead><tbody id="live-period-rows">
-        <tr><td colspan="5" class="empty">&mdash;</td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Wallet over time</h2>
-      <p class="hint">What the account has actually been worth, as the bot recorded it.</p>
-      <div id="wallet-chart"><div class="empty">&mdash;</div></div>
-    </div>
-
-    <div class="card">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <h2 style="margin:0">Performance</h2>
-        <span class="spacer" style="flex:1"></span>
-        <div class="chips" id="perf-tabs">
-          <button class="btn tiny active" data-perf="performance">By pair</button>
-          <button class="btn tiny" data-perf="entries">By entry tag</button>
-          <button class="btn tiny" data-perf="exits">By exit reason</button>
-          <button class="btn tiny" data-perf="mix_tags">By entry + exit</button>
-        </div>
-      </div>
-      <p class="hint" id="perf-hint">Which pairs actually made money.</p>
-      <div class="scroll"><table><thead><tr>
-        <th id="perf-col">Pair</th><th class="r">Profit %</th>
-        <th class="r">Profit</th><th class="r">Trades</th><th></th>
-      </tr></thead><tbody id="perf-rows">
-        <tr><td colspan="5" class="empty">&mdash;</td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="grid3">
-      <div class="card">
-        <h2>Wallet</h2>
-        <p class="hint">What the exchange says you hold.</p>
-        <div class="scroll"><table><thead><tr>
-          <th>Coin</th><th class="r">Free</th><th class="r">In trades</th><th class="r">Total</th>
-        </tr></thead><tbody id="bal-rows">
-          <tr><td colspan="4" class="empty">&mdash;</td></tr>
-        </tbody></table></div>
-      </div>
-      <div class="card">
-        <h2>Pairs the bot is watching</h2>
-        <p class="hint">The whitelist as the pairlist filters currently leave it.</p>
-        <div id="whitelist-box"><div class="empty">&mdash;</div></div>
-        <h3 class="sub">Locked out right now</h3>
-        <p class="hint">A pair the strategy has barred itself from after a loss. It is on the
-          whitelist and still will not be traded until the lock expires &mdash; which is usually
-          the answer to &ldquo;why did it skip that signal&rdquo;.</p>
-        <div id="locks-box"><div class="empty">&mdash;</div></div>
-      </div>
-      <div class="card">
-        <h2>Why trades closed</h2>
-        <p class="hint">Mostly stop-loss means the strategy is being stopped out, not exiting.</p>
-        <div id="exit-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Closed trades</h2>
-      <p class="hint">The bot's own list, as it holds it in memory.</p>
-      <div class="scroll"><table><thead><tr>
-        <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Entry</th><th class="r">Exit</th>
-        <th class="r">Profit</th><th class="r">%</th><th>Reason</th>
-      </tr></thead><tbody id="closed-rows">
-        <tr><td colspan="8" class="empty">No closed trades</td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Trade history in the database</h2>
-      <p class="hint">The same trades read from Postgres instead of from the bot. This is the
-        copy that survives a redeploy, so it is the one to trust when the two disagree &mdash;
-        and the only one still here when the bot is down.</p>
-      <div class="scroll"><table><thead><tr>
-        <th>Pair</th><th>Opened</th><th class="r">Amount</th><th class="r">Entry</th>
-        <th class="r">Exit</th><th class="r">Profit</th><th>Reason</th>
-      </tr></thead><tbody id="trade-rows">
-        <tr><td colspan="7" class="empty">No trades</td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Registered bots</h2>
-      <p class="hint">From the database rather than the bot, so a bot that has stopped answering
-        still appears here &mdash; marked stale, which is the useful thing to know.</p>
-      <div class="scroll"><table><thead><tr>
-        <th>Name</th><th>Health</th><th>Exchange</th><th>Strategy</th><th>Mode</th>
-        <th class="r">Open</th><th>Last seen</th>
-      </tr></thead><tbody id="bot-rows">
-        <tr><td colspan="7" class="empty">No bots registered</td></tr>
-      </tbody></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Bot log</h2>
-      <p class="hint">The last few hundred lines, straight from the running process.</p>
-      <pre id="bot-log" class="muted">Loading&hellip;</pre>
     </div>
   </section>
 </main>
@@ -1651,12 +1691,15 @@ async function loadLive() {
 
   // wallet
   const cur = (o.balance?.currencies || []).filter(c => (c.balance ?? 0) > 0);
-  $("bal-rows").innerHTML = cur.length ? cur.map(c => `<tr>
-      <td><strong>${esc(c.currency)}</strong></td>
-      <td class="r num">${fmtNum(c.free, 6)}</td>
-      <td class="r num">${fmtNum(c.used, 6)}</td>
-      <td class="r num">${fmtNum(c.balance, 6)}</td></tr>`).join("")
-    : '<tr><td colspan="4" class="empty">Nothing held</td></tr>';
+  // A list, not a table: this sits in a 300px column where a four-column table
+  // clips its own headings.
+  $("bal-rows").innerHTML = cur.length ? cur.map(c => `<div class="holding">
+      <b>${esc(c.currency)}</b>
+      <span class="tot num">${fmtNum(c.balance, 6)}</span>
+      <span class="split">${fmtNum(c.free, 6)} free${
+        Number(c.used) ? ` · ${fmtNum(c.used, 6)} in trades` : ""}</span>
+    </div>`).join("")
+    : '<div class="empty">Nothing held</div>';
 
 
   // exit reasons + closed trades + log are their own reads, so a slow one does

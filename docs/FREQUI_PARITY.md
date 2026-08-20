@@ -112,5 +112,21 @@ Open date`. *Done, plus held-duration and a close button.*
 
 - **Force exit all** — deliberate: closing every position at once is a decision
   that wants more friction than a button, and closing them one at a time works.
-- **Two-column layout** — FreqUI puts the Multi Pane beside the chart. Everything
-  in that pane exists here, stacked rather than side by side.
+*(nothing else outstanding)*
+
+## Layout
+
+Two columns, as FreqUI has them: a narrow pane on the left, the chart and
+everything wide on the right. Below 1150px they stack, with the main column
+first — the chart is the point, and burying it under five pane cards on a phone
+would not be.
+
+What goes where is decided by whether it still reads at 300px. Wallet, the
+pairlist with its locks, and the exit-reason ranking do, and live in the pane;
+the wallet became a list rather than a table there, because a four-column table
+in that width clips its own headings. Log lines and the seven-column bot table do
+not, and live in the main column.
+
+The pane is not sticky. Pinning it needs a height cap, and the cap slices a card
+in half the moment the pane grows — which one more held currency or one more
+locked pair does.
