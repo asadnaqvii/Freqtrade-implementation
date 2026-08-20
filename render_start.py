@@ -269,14 +269,26 @@ def acquire_trading_lock(url, name, wait_seconds=300):
             cur.execute("select pg_advisory_unlock(%s)", (key,))
 
     # Announce the intent first, so an incumbent sees it and stands down.
-    announced = try_lock(wanted_key)
+    #
+    # Retried, because the incumbent's own watcher takes and releases WANTED
+    # every few seconds to test whether anyone is waiting. A single attempt that
+    # lands inside that window sees the incumbent's own probe, concludes a third
+    # instance is queued, and exits -- which fails the deploy and leaves the old
+    # instance running. The contention we actually care about lasts as long as
+    # another newcomer is waiting, not one round trip.
+    deadline = time.time() + wait_seconds
+    announced = False
+    while time.time() < deadline:
+        if try_lock(wanted_key):
+            announced = True
+            break
+        time.sleep(1)
     if not announced:
         print("another instance is already waiting to take over; deferring to it",
               flush=True)
         conn.close()
         return False
 
-    deadline = time.time() + wait_seconds
     said = False
     while True:
         if try_lock(held_key):
@@ -310,6 +322,7 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
     _, wanted_key = _lock_keys(name)
 
     def watch():
+        failures = 0
         while True:
             time.sleep(poll_seconds)
             conn = _trading_lock_conn
@@ -323,9 +336,19 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
                     free = bool(cur.fetchone()[0])
                     if free:
                         cur.execute("select pg_advisory_unlock(%s)", (wanted_key,))
+                failures = 0
             except Exception as exc:
-                print(f"takeover watch failed: {exc}", flush=True)
-                return
+                # Giving up here is what made the service undeployable before:
+                # a watcher that has stopped watching never stands down, so
+                # every future deploy waits out the full timeout and fails. One
+                # dropped query is not a reason to stop.
+                failures += 1
+                print(f"takeover watch failed ({failures}): {exc}", flush=True)
+                if failures >= 10:
+                    print("takeover watch giving up; this instance can no longer "
+                          "stand down for a deploy", flush=True)
+                    return
+                continue
             if not free:
                 print("a newer instance wants the trading lock; standing down",
                       flush=True)

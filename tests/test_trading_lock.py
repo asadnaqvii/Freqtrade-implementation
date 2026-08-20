@@ -252,3 +252,91 @@ def _instant_clock():
     fake.time = lambda: clock["now"]
     fake.sleep = lambda s: clock.__setitem__("now", clock["now"] + s)
     return fake
+
+
+# ---------------------------------------------------------------------------
+# The deploy that failed on 2026-08-20
+# ---------------------------------------------------------------------------
+
+def test_the_incumbents_own_probe_does_not_turn_a_newcomer_away(monkeypatch, server):
+    """The bug that failed the live cutover deploy.
+
+    The incumbent's watcher tests for waiters by taking WANTED and releasing it
+    again, every few seconds. A newcomer that tried once and landed inside that
+    window saw the incumbent's own probe, concluded a third instance was already
+    queued, and exited -- so the deploy failed and the old instance kept running.
+
+    Simulated by holding WANTED for one poll interval, which is exactly what the
+    probe does.
+    """
+    incumbent = load_lock_module(monkeypatch, stub(server))
+    assert incumbent["acquire_trading_lock"]("postgresql://x/y", "bot") is True
+
+    # Stand in for the probe: WANTED is taken right now, released shortly after.
+    _, wanted_key = incumbent["_lock_keys"]("bot")
+    probe = stub(server).connect()
+    assert server.try_lock(wanted_key, probe) is True
+
+    import threading
+    import time as real_time
+
+    newcomer = load_lock_module(monkeypatch, stub(server))
+    result = {}
+    t = threading.Thread(target=lambda: result.update(
+        ok=newcomer["acquire_trading_lock"]("postgresql://x/y", "bot", wait_seconds=10)))
+    t.start()
+
+    real_time.sleep(1.5)          # longer than one announce retry
+    server.unlock(wanted_key, probe)   # the probe releases, as it always does
+    real_time.sleep(1.5)
+
+    # The incumbent leaves, as it would once it noticed the newcomer.
+    incumbent["_trading_lock_conn"].close()
+    t.join(timeout=10)
+
+    assert result.get("ok") is True, (
+        "the newcomer gave up because the incumbent's own probe held WANTED for "
+        "an instant; that is a failed deploy"
+    )
+
+
+def test_the_watcher_survives_a_dropped_query_and_still_stands_down(monkeypatch, server):
+    """A watcher that has stopped watching can never stand down.
+
+    It used to return on the first exception, permanently. Every deploy after
+    that would wait out the full timeout and fail -- the undeployable state this
+    whole handshake exists to prevent, reached by a different route.
+    """
+    incumbent = load_lock_module(monkeypatch, stub(server))
+    assert incumbent["acquire_trading_lock"]("postgresql://x/y", "bot") is True
+
+    conn = incumbent["_trading_lock_conn"]
+    real_cursor = conn.cursor
+    failures = {"n": 0}
+
+    def flaky():
+        if failures["n"] < 2:
+            failures["n"] += 1
+            raise RuntimeError("connection reset by peer")
+        return real_cursor()
+
+    conn.cursor = flaky
+
+    yielded = []
+    incumbent["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+
+    import time as real_time
+
+    real_time.sleep(0.2)
+    assert failures["n"] == 2, "the watcher stopped polling after the first error"
+
+    # Now a newcomer asks for the lock; the recovered watcher must notice.
+    _, wanted_key = incumbent["_lock_keys"]("bot")
+    waiter = stub(server).connect()
+    assert server.try_lock(wanted_key, waiter) is True
+
+    for _ in range(200):
+        if yielded:
+            break
+        real_time.sleep(0.02)
+    assert yielded, "the watcher never recovered, so the next deploy would fail"
