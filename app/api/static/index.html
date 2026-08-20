@@ -80,6 +80,24 @@
     text-transform:uppercase; color:var(--muted);
   }
   .card p.hint { margin:0 0 14px; color:var(--muted); font-size:12.5px; }
+  .card h3.sub {
+    margin:18px 0 4px; padding-top:14px; border-top:1px solid var(--line-soft);
+    font-size:11px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .locks { display:flex; flex-direction:column; gap:6px; }
+  .lock {
+    display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+    padding:7px 9px; border-radius:var(--radius-sm);
+    background:var(--warn-soft); border:1px solid var(--line);
+  }
+  .lock b { font-size:12.5px; }
+  .lock .why { color:var(--muted); font-size:11.5px; flex:1; min-width:90px; }
+  .lock .until { font-size:11.5px; color:var(--warn); font-variant-numeric:tabular-nums; }
+  .chip-pair.locked {
+    background:var(--panel-2); border-color:var(--line); color:var(--muted);
+    text-decoration:line-through; text-decoration-thickness:1px;
+  }
   .card h2 + .scroll, .card h2 + table { margin-top:12px; }
 
   label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; font-weight:550; }
@@ -735,6 +753,11 @@
         <h2>Pairs the bot is watching</h2>
         <p class="hint">The whitelist as the pairlist filters currently leave it.</p>
         <div id="whitelist-box"><div class="empty">&mdash;</div></div>
+        <h3 class="sub">Locked out right now</h3>
+        <p class="hint">A pair the strategy has barred itself from after a loss. It is on the
+          whitelist and still will not be traded until the lock expires &mdash; which is usually
+          the answer to &ldquo;why did it skip that signal&rdquo;.</p>
+        <div id="locks-box"><div class="empty">&mdash;</div></div>
       </div>
       <div class="card">
         <h2>Why trades closed</h2>
@@ -1832,6 +1855,33 @@ async function loadLiveExtras(stake) {
          ${esc((w.method || []).join(", ") || "—")}</p>`
       : '<div class="empty">No pairs currently whitelisted</div>';
   } catch { $("whitelist-box").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  try {
+    const l = await api("/api/live/locks");
+    // Freqtrade returns expired locks too; only an active one explains a pair
+    // the bot is declining to trade right now.
+    const now = Date.now();
+    const locks = (l.locks || [])
+      .filter(x => x.active !== false && (!x.lock_end_timestamp || x.lock_end_timestamp > now))
+      .sort((a, b) => (a.lock_end_timestamp || 0) - (b.lock_end_timestamp || 0));
+    $("locks-box").innerHTML = locks.length
+      ? `<div class="locks">${locks.map(x => `<div class="lock">
+          <b>${esc(x.pair)}</b>
+          <span class="why">${esc(x.reason || "no reason given")}</span>
+          <span class="until">until ${shortDate(x.lock_end_time)}${
+            x.side && x.side !== "*" ? ` · ${esc(x.side)}` : ""}</span>
+        </div>`).join("")}</div>`
+      : '<div class="empty">Nothing locked &mdash; every whitelisted pair is tradable</div>';
+
+    // Mark the locked pairs in the chip row above too, so the answer to "why is
+    // it not trading that one" is visible without reading two lists.
+    const barred = new Set(locks.map(x => x.pair));
+    document.querySelectorAll("#whitelist-box .chip-pair").forEach(chip => {
+      const locked = barred.has(chip.textContent.trim());
+      chip.classList.toggle("locked", locked);
+      chip.title = locked ? "Locked — the strategy will not enter this pair right now" : "";
+    });
+  } catch { $("locks-box").innerHTML = '<div class="empty">Unavailable</div>'; }
 
   // The chart wants both halves of the history and the list of pairs to offer,
   // all of which have just been fetched -- so it draws from those rather than

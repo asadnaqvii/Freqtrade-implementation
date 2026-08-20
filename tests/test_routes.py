@@ -52,6 +52,10 @@ def index_of(routes, path, method="GET"):
         ("/api/bots/live/trades", "/api/bots/{bot_id}/trades"),
         ("/api/backtests/jobs", "/api/backtests/{run_id}"),
         ("/api/backtests/failed", "/api/backtests/{run_id}"),
+        # The candle chart reads this; /{section} would otherwise swallow it and
+        # answer "no such section: candles", which reads like a missing feature
+        # rather than a route-ordering mistake.
+        ("/api/live/candles", "/api/live/{section}"),
     ],
 )
 def test_literal_routes_are_not_shadowed(routes, literal, parameterised):

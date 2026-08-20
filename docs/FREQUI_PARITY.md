@@ -45,7 +45,12 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
      meaningful when it is an artefact of the scaling. Two aligned plots instead.
 6. **Logs** — *Done.*
 7. **Locks** — pairs the strategy has locked after a loss, and until when.
-   *Endpoint allowlisted, no panel yet.*
+   *Done, inside the whitelist card: the two answer the same question from
+   opposite sides. Expired locks are filtered out, and a locked pair is struck
+   through in the chip row above so the reason a signal was skipped is visible
+   without reading two lists. No unlock button — `delete_lock` is not on the
+   bot-API allowlist, and overriding the strategy's own risk control from a web
+   page is a decision that wants more friction than a button.*
 
 ## Chart (right column)
 
@@ -105,8 +110,6 @@ Open date`. *Done, plus held-duration and a close button.*
 
 ## Still outstanding
 
-- **Locks panel** — `locks` is allowlisted on the bot client and the endpoint
-  answers; there is no panel rendering it.
 - **Force exit all** — deliberate: closing every position at once is a decision
   that wants more friction than a button, and closing them one at a time works.
 - **Two-column layout** — FreqUI puts the Multi Pane beside the chart. Everything
