@@ -124,6 +124,15 @@
   .holding .split { grid-column:1 / -1; font-size:11px; color:var(--muted);
                     font-variant-numeric:tabular-nums; }
 
+  .btn.armed {
+    border-color:var(--warn); color:var(--warn); background:var(--warn-soft); font-weight:600;
+  }
+  .ctl-confirm {
+    margin:-8px 0 16px; padding:10px 12px; border-radius:var(--radius-sm);
+    background:var(--warn-soft); border:1px solid var(--warn);
+    color:var(--text); font-size:12.5px; white-space:pre-line;
+  }
+
   .chip-pair.locked {
     background:var(--panel-2); border-color:var(--line); color:var(--muted);
     text-decoration:line-through; text-decoration-thickness:1px;
@@ -682,6 +691,7 @@
       <span class="muted" style="font-size:12px;align-self:center">Stopping outright
         leaves open positions unmanaged; stopping entries keeps managing them.</span>
     </div>
+    <p class="ctl-confirm" id="ctl-confirm" hidden></p>
 
     <div class="kpis" id="live-kpis"></div>
 
@@ -805,27 +815,31 @@
         </div>
 
         <div class="card">
-          <h2>Closed trades</h2>
-          <p class="hint">The bot's own list, as it holds it in memory.</p>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">All trades</h2>
+            <span style="flex:1"></span>
+            <div class="chips" id="hist-filter">
+              <button class="btn tiny active" data-hf="all">All</button>
+              <button class="btn tiny" data-hf="open">Open</button>
+              <button class="btn tiny" data-hf="closed">Closed</button>
+            </div>
+            <input id="hist-search" placeholder="filter by pair, tag or reason"
+                   style="width:auto;min-width:210px">
+          </div>
+          <p class="hint" id="trade-hist-note">Every trade this account has, from both stores at
+            once: the running bot's own tables, and what has been preserved across deployments
+            &mdash; including history from bots that no longer exist. Neither alone is your
+            full history.</p>
+          <div class="kpis" id="hist-kpis" style="margin-bottom:12px"></div>
           <div class="scroll"><table><thead><tr>
-            <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Entry</th><th class="r">Exit</th>
-            <th class="r">Profit</th><th class="r">%</th><th>Reason</th>
-          </tr></thead><tbody id="closed-rows">
-            <tr><td colspan="8" class="empty">No closed trades</td></tr>
-          </tbody></table></div>
-        </div>
-
-        <div class="card">
-          <h2>Trade history in the database</h2>
-          <p class="hint">The same trades read from Postgres instead of from the bot. This is the
-            copy that survives a redeploy, so it is the one to trust when the two disagree &mdash;
-            and the only one still here when the bot is down.</p>
-          <div class="scroll"><table><thead><tr>
-            <th>Pair</th><th>Opened</th><th class="r">Amount</th><th class="r">Entry</th>
-            <th class="r">Exit</th><th class="r">Profit</th><th>Reason</th>
+            <th>#</th><th>Pair</th><th class="r">Amount</th><th class="r">Stake</th>
+            <th class="r">Entry</th><th class="r">Exit</th><th class="r">Profit</th>
+            <th class="r">%</th><th>Opened</th><th>Closed</th><th class="r">Held</th>
+            <th>Entry tag</th><th>Exit reason</th><th>Strategy</th><th>Source</th>
           </tr></thead><tbody id="trade-rows">
-            <tr><td colspan="7" class="empty">No trades</td></tr>
+            <tr><td colspan="15" class="empty">No trades</td></tr>
           </tbody></table></div>
+          <p class="hint" id="trade-hist-count" style="margin:10px 0 0"></p>
         </div>
 
         <div class="card">
@@ -1502,16 +1516,85 @@ async function loadBots() {
 
 // Read from Postgres, not from the bot: this is the copy that outlives a
 // redeploy, and the only history left when the bot is unreachable.
+let histTrades = [], histFilter = "all", histQuery = "";
+
+const heldBetween = (a, b) => {
+  if (!a) return "—";
+  const ms = (b ? new Date(b) : new Date()).getTime() - new Date(a).getTime();
+  if (!isFinite(ms) || ms < 0) return "—";
+  const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000) % 24;
+  const m = Math.floor(ms / 60000) % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+
 async function loadStoredTrades() {
-  const { trades } = await api("/api/bots/live/trades");
-  $("trade-rows").innerHTML = trades.length ? trades.map(t => `<tr>
-      <td>${esc(t.pair)}</td><td class="muted">${shortDate(t.open_date)}</td>
-      <td class="num">${fmtNum(t.amount, 6)}</td><td class="num">${fmtNum(t.open_rate, 6)}</td>
-      <td class="num">${fmtNum(t.close_rate, 6)}</td>
-      <td class="num">${t.close_profit_abs != null ? signed(t.close_profit_abs, fmtNum(t.close_profit_abs)) : "open"}</td>
-      <td class="muted">${esc(t.exit_reason || "—")}</td></tr>`).join("")
-    : '<tr><td colspan="7" class="empty">No trades</td></tr>';
+  const { trades, counts, totals } = await api("/api/bots/history");
+  histTrades = trades || [];
+
+  const c = counts || {}, tot = totals || {};
+  $("hist-kpis").innerHTML = [
+    ["Trades", c.total ?? 0, `${c.open ?? 0} open · ${c.closed ?? 0} closed`],
+    ["Realised", (tot.profit_abs >= 0 ? "+" : "") + fmtNum(tot.profit_abs),
+     "USDT, closed trades only"],
+    ["Win rate", tot.win_rate == null ? "—" : fmtNum(tot.win_rate) + "%",
+     `${tot.wins ?? 0} won · ${tot.losses ?? 0} lost`],
+    ["Where from", `${c.live ?? 0} / ${c.archive ?? 0}`, "running bot / preserved"],
+  ].map(([k, v, s]) => `<div class="kpi"><div class="k">${esc(k)}</div>
+      <div class="v ${String(v).startsWith("-") ? "neg" : String(v).startsWith("+") ? "pos" : ""}">${esc(v)}</div>
+      <div class="s">${esc(s)}</div></div>`).join("");
+
+  $("trade-hist-note").textContent =
+    `${c.total ?? 0} trades in total, from ${shortDate(tot.first_open)} to `
+    + `${shortDate(tot.last_open)}. Both stores in one list: the running bot's own tables `
+    + "and the copy preserved across deployments. Neither alone is your full history.";
+  renderHistory();
 }
+
+function renderHistory() {
+  const q = histQuery.trim().toLowerCase();
+  const rows = histTrades.filter(t => {
+    if (histFilter === "open" && !t.is_open) return false;
+    if (histFilter === "closed" && t.is_open) return false;
+    if (!q) return true;
+    return [t.pair, t.enter_tag, t.exit_reason, t.strategy, t.exchange]
+      .some(v => String(v ?? "").toLowerCase().includes(q));
+  });
+
+  $("trade-rows").innerHTML = rows.length ? rows.map(t => {
+    const abs = t.close_profit_abs, pct = t.close_profit_pct;
+    return `<tr>
+      <td class="muted num">${esc(t.ft_trade_id ?? "—")}</td>
+      <td><strong>${esc(t.pair)}</strong>${t.is_short ? ' <span class="pill bad">short</span>' : ""}</td>
+      <td class="r num">${fmtNum(t.amount, 6)}</td>
+      <td class="r num">${fmtNum(t.stake_amount)}</td>
+      <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+      <td class="r num">${t.close_rate == null ? "—" : fmtNum(t.close_rate, 6)}</td>
+      <td class="r num">${abs == null ? '<span class="muted">open</span>'
+                                      : signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
+      <td class="r num">${pct == null ? "—"
+                                      : signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
+      <td class="muted">${shortDate(t.open_date)}</td>
+      <td class="muted">${t.close_date ? shortDate(t.close_date) : "—"}</td>
+      <td class="r muted">${heldBetween(t.open_date, t.close_date)}</td>
+      <td class="muted">${esc(t.enter_tag || "—")}</td>
+      <td class="muted">${esc(t.exit_reason || "—")}</td>
+      <td class="muted">${esc(t.strategy || "—")}</td>
+      <td><span class="pill ${t.source === "live" ? "info" : "neutral"}">${esc(t.source)}</span></td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="15" class="empty">Nothing matches</td></tr>';
+
+  $("trade-hist-count").textContent = rows.length === histTrades.length
+    ? `Showing all ${rows.length} trades.`
+    : `Showing ${rows.length} of ${histTrades.length} trades.`;
+}
+
+document.querySelectorAll("#hist-filter [data-hf]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#hist-filter [data-hf]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  histFilter = b.dataset.hf;
+  renderHistory();
+});
+$("hist-search").oninput = (e) => { histQuery = e.target.value; renderHistory(); };
 
 // ── live bot ────────────────────────────────────────────────
 // Everything here comes from the bot over Render's private network, because the
@@ -1835,10 +1918,40 @@ const CTL_CONFIRM = {
   reload_config: "Reload the configuration from disk?",
 };
 
+// Two clicks, in the page. Deliberately not window.confirm: a browser that has
+// been asked to block dialogs returns false from it without showing anything,
+// and the control then does nothing at all with no request, no error and no
+// way to tell. That is how the Start button looked broken on the live cutover.
+let ctlArmed = null, ctlTimer = null;
+
+function disarmControls() {
+  clearTimeout(ctlTimer);
+  ctlArmed = null;
+  document.querySelectorAll("[data-ctl]").forEach(b => {
+    if (b.dataset.label) { b.textContent = b.dataset.label; delete b.dataset.label; }
+    b.classList.remove("armed");
+  });
+  $("ctl-confirm").hidden = true;
+}
+
 document.querySelectorAll("[data-ctl]").forEach(b => b.onclick = async () => {
   const action = b.dataset.ctl;
-  if (!confirm(CTL_CONFIRM[action] || `Send ${action}?`)) return;
-  const label = b.textContent;
+
+  if (ctlArmed !== action) {
+    disarmControls();
+    ctlArmed = action;
+    b.dataset.label = b.textContent;
+    b.textContent = "Confirm?";
+    b.classList.add("armed");
+    $("ctl-confirm").textContent = CTL_CONFIRM[action] || `Send ${action}?`;
+    $("ctl-confirm").hidden = false;
+    // Not armed forever: a stale "Confirm?" invites a click that means nothing.
+    ctlTimer = setTimeout(disarmControls, 12000);
+    return;
+  }
+
+  const label = b.dataset.label || b.textContent;
+  disarmControls();
   b.disabled = true; b.textContent = "Sending…";
   try {
     const r = await api("/api/live/control", {
@@ -1872,23 +1985,13 @@ async function loadLiveExtras(stake) {
     });
   } catch { $("exit-rows").innerHTML = '<div class="empty">Unavailable</div>'; }
 
+  // Still fetched, but only to mark trades on the candle chart -- the trade
+  // table itself now reads both stores, so the bot's in-memory list is no
+  // longer anybody's idea of "all my trades".
   try {
     const t = await api("/api/live/trades");
     liveClosedTrades = (t.trades || []).filter(x => !x.is_open);
-    const rows = liveClosedTrades.slice(-60).reverse();
-    $("closed-rows").innerHTML = rows.length ? rows.map(x => {
-      const abs = Number(x.profit_abs ?? 0), pct = Number(x.profit_pct ?? 0);
-      return `<tr>
-        <td><strong>${esc(x.pair)}</strong></td>
-        <td class="muted">${shortDate(x.open_date)}</td>
-        <td class="muted">${shortDate(x.close_date)}</td>
-        <td class="r num">${fmtNum(x.open_rate, 6)}</td>
-        <td class="r num">${fmtNum(x.close_rate, 6)}</td>
-        <td class="r num">${signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
-        <td class="r num">${signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
-        <td class="muted">${esc(x.exit_reason || "—")}</td></tr>`;
-    }).join("") : '<tr><td colspan="8" class="empty">No closed trades</td></tr>';
-  } catch { /* the database-backed table below still shows history */ }
+  } catch { /* the chart still draws; the table has its own source */ }
 
   try {
     const w = await api("/api/live/whitelist");
