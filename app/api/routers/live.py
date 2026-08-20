@@ -91,6 +91,41 @@ async def overview(db: UserDB) -> dict:
         raise _handle(exc) from exc
 
 
+# What the chart actually draws. freqtrade returns every column the strategy
+# computed -- for an indicator-heavy strategy that is several times the OHLCV it
+# is wrapped around, and none of it reaches a pixel. The bot's own GET endpoint
+# has no column filter (only the POST variant does, and POST is reserved here for
+# the handful of calls that change state), so the trim happens on this side --
+# which is also the leg that crosses the public internet.
+CHART_COLUMNS = (
+    "date", "__date_ts", "open", "high", "low", "close", "volume",
+    "enter_long", "exit_long", "buy", "sell",
+)
+
+
+def _trim_columns(payload: dict) -> dict:
+    """Keep only the columns the chart reads, preserving their order."""
+    columns = payload.get("columns")
+    rows = payload.get("data")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return payload
+
+    keep = [i for i, name in enumerate(columns) if name in CHART_COLUMNS]
+    if len(keep) == len(columns):
+        return payload
+
+    # A copy, not an edit in place: the argument is somebody else's payload, and
+    # the tests that check a value still sits under its own column need the
+    # original to compare against.
+    # all_columns still lists everything the strategy computed, so a caller can
+    # see what was dropped rather than concluding the strategy has no indicators.
+    return {
+        **payload,
+        "columns": [columns[i] for i in keep],
+        "data": [[row[i] for i in keep] for row in rows if isinstance(row, list)],
+    }
+
+
 @router.get("/candles")
 async def candles(
     db: UserDB,
@@ -113,7 +148,9 @@ async def candles(
         })
     except BotError as exc:
         raise _handle(exc) from exc
-    return payload if isinstance(payload, dict) else {"data": payload}
+    if not isinstance(payload, dict):
+        return {"data": payload}
+    return _trim_columns(payload)
 
 
 @router.get("/{section}")
