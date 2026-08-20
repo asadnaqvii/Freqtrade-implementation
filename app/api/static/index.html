@@ -877,6 +877,7 @@ function renderPairChips() {
     renderPairChips();
   });
   candleEstimate();
+  checkHistory();
 }
 
 function showPairOptions(term) {
@@ -1516,7 +1517,8 @@ document.querySelectorAll("#bt-presets [data-years]").forEach(b => b.onclick = (
     $("bt-from").value = isoDay(start);
     $("bt-to").value = isoDay(end);
   }
-  $("bt-history-out").textContent = "";
+  candleEstimate();
+  checkHistory();
 });
 
 function candleEstimate() {
@@ -1541,7 +1543,41 @@ function candleEstimate() {
   $("bt-estimate").className = total > 2_000_000 ? "neg" : "muted";
 }
 ["bt-from", "bt-to", "bt-tf"].forEach(id =>
-  $(id)?.addEventListener("change", candleEstimate));
+  $(id)?.addEventListener("change", () => { candleEstimate(); checkHistory(); }));
+
+// A backtest spans its pairs together, so the youngest pair bounds the whole
+// window: adding a coin that listed last year silently shortens a ten-year test
+// to one. Checking as the choice is made says so before the job is queued
+// rather than in the coverage note afterwards.
+let historyTimer = null;
+function checkHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(runHistoryCheck, 900);
+}
+
+async function runHistoryCheck() {
+  const out = $("bt-history-out");
+  if (!chosenPairs.length || !$("bt-from").value) { out.textContent = ""; return; }
+  out.textContent = "Checking how far back these pairs go…";
+  try {
+    const q = new URLSearchParams({ exchange: $("bt-exchange").value || "kucoin",
+                                    pairs: chosenPairs.join(","), timeframe: "1d" });
+    const r = await api(`/api/catalog/history?${q}`);
+    const want = $("bt-from").value;
+    const short = r.pairs
+      .filter(p => p.earliest && String(p.earliest).slice(0, 10) > want)
+      .sort((a, b) => String(b.earliest).localeCompare(String(a.earliest)));
+    if (!short.length) {
+      out.innerHTML = `<span class="pos">All ${r.pairs.length} pair(s) have history back to ${esc(want)}.</span>`;
+      return;
+    }
+    const worst = short[0];
+    out.innerHTML = `<span class="neg">${esc(worst.pair)} only goes back to
+      ${esc(String(worst.earliest).slice(0, 10))}</span> — a backtest covers its pairs
+      together, so that is where this one would start${
+        short.length > 1 ? ` (${short.length} pairs are shorter than the window)` : ""}.`;
+  } catch (e) { out.textContent = ""; }
+}
 document.querySelectorAll("#bt-presets [data-years]").forEach(b =>
   b.addEventListener("click", () => setTimeout(candleEstimate, 0)));
 

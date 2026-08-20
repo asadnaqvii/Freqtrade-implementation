@@ -39,6 +39,14 @@ _stopping = threading.Event()
 #: sweep rather than depending on a restart happening to land at the right time.
 STALL_SWEEP_SECONDS = 120
 
+#: How quiet a running job must go before it is considered abandoned. The
+#: database default is twenty minutes, which is fine for a crash and far too
+#: slow for a deploy: a redeploy orphans whatever the old worker was holding,
+#: and that job then looked stuck for a third of an hour. Comfortably more than
+#: the heartbeat interval, so a job that is merely slow is never taken away
+#: from a worker still doing it.
+STALE_AFTER = "5 minutes"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -350,7 +358,8 @@ def run_forever() -> None:
         is exactly what happened across a run of redeploys.
         """
         try:
-            revived = client.rpc("requeue_stalled_backtest_jobs")
+            revived = client.rpc("requeue_stalled_backtest_jobs",
+                                 {"p_stale_after": STALE_AFTER})
             if revived:
                 log.info("requeued %s stalled job(s)", revived)
         except Exception as exc:
