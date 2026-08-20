@@ -35,6 +35,10 @@ begin
                            || 'fewer pairs, or a coarser timeframe -- or give the worker more '
                            || 'memory.')
                          else error end,
+           -- A job the sweep gives up on is finished, and should say when.
+           -- Without this a failed run has no end time, so anything measuring
+           -- how long it ran, or sorting by when it stopped, skips it.
+           finished_at = case when attempts >= max_attempts then now() else finished_at end,
            claimed_by = null,
            claimed_at = null
      where status = 'running'
