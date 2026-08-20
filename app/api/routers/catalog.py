@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -89,4 +90,58 @@ async def history(
         # A backtest spans the pairs together, so the shortest history is what
         # actually limits the window.
         "common_start": max((row["earliest"] for row in usable), default=None),
+    }
+
+
+#: Loading an exchange's markets is a real HTTP call returning thousands of
+#: entries, and the answer barely changes day to day. Cache it per exchange so
+#: filling a dropdown does not hammer the venue.
+_MARKET_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_MARKET_TTL_SECONDS = 3600
+
+
+@router.get("/markets")
+async def markets(_: CurrentUser, exchange: str = "kucoin", quote: str = "") -> dict:
+    """Tradable spot pairs on a venue, for picking rather than typing.
+
+    Typing pair symbols by hand is how you discover, after a backtest returns
+    nothing, that this venue spells it XBT/USD.
+    """
+    venue = exchange.strip().lower()
+    if not venue:
+        raise HTTPException(status_code=422, detail="name an exchange")
+
+    cached = _MARKET_CACHE.get(venue)
+    if cached and (time.time() - cached[0]) < _MARKET_TTL_SECONDS:
+        rows = cached[1]
+    else:
+        provider = registry.build({"provider": venue, "ccxt_id": venue})
+        try:
+            found = provider.fetch_markets()
+        except ProviderError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            provider.close()
+        rows = sorted(
+            (
+                {"symbol": m.symbol, "base": m.base, "quote": m.quote,
+                 "min_cost": m.min_cost}
+                for m in found.values()
+                if m.spot and m.active and m.base and m.quote
+            ),
+            key=lambda m: (m["quote"], m["base"]),
+        )
+        _MARKET_CACHE[venue] = (time.time(), rows)
+
+    quotes = sorted({row["quote"] for row in rows})
+    wanted = quote.strip().upper()
+    if wanted:
+        rows = [row for row in rows if row["quote"] == wanted]
+
+    return {
+        "exchange": venue,
+        "quotes": quotes,
+        "count": len(rows),
+        # Enough for a searchable list without shipping every market on Binance.
+        "pairs": rows[:1500],
     }

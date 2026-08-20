@@ -163,6 +163,32 @@
   .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
   .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
 
+  .picker { position:relative; }
+  .picker input { margin-top:4px; }
+  .options {
+    position:absolute; z-index:30; left:0; right:0; top:100%; margin-top:4px;
+    max-height:230px; overflow-y:auto; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius-sm); box-shadow:var(--shadow);
+  }
+  .options button {
+    display:flex; justify-content:space-between; gap:10px; width:100%; text-align:left;
+    background:none; border:none; border-bottom:1px solid var(--line-soft);
+    padding:7px 11px; font:inherit; font-size:12.5px; color:var(--text); cursor:pointer;
+  }
+  .options button:hover, .options button:focus-visible { background:var(--panel-2); }
+  .options button:last-child { border-bottom:none; }
+  .options .q { color:var(--muted); font-size:11.5px; }
+  .chip-pair {
+    display:inline-flex; align-items:center; gap:6px; padding:3px 6px 3px 9px;
+    background:var(--accent-soft); border:1px solid var(--accent-line);
+    border-radius:999px; font-size:11.5px; font-weight:550; color:var(--accent);
+  }
+  .chip-pair button {
+    background:none; border:none; color:inherit; cursor:pointer; font-size:14px;
+    line-height:1; padding:0 2px; opacity:.75;
+  }
+  .chip-pair button:hover { opacity:1; }
+
   .chartwrap { position:relative; }
   .chartwrap .tip {
     position:absolute; top:4px; pointer-events:none; background:var(--panel);
@@ -309,13 +335,20 @@
         currency, any past window the venue has history for.</p>
       <div class="row">
         <div><label for="bt-strategy">Strategy</label><select id="bt-strategy"></select></div>
-        <div><label for="bt-exchange">Exchange</label><input id="bt-exchange" value="kucoin" list="exchange-list">
-             <datalist id="exchange-list"></datalist></div>
+        <div><label for="bt-exchange">Exchange</label><select id="bt-exchange"></select></div>
         <div><label for="bt-tf">Timeframe</label><select id="bt-tf"></select></div>
       </div>
       <div class="row">
-        <div><label for="bt-pairs">Pairs (comma separated)</label><input id="bt-pairs" value="BTC/USDT, ETH/USDT"></div>
-        <div><label for="bt-stakecur">Quote currency</label><input id="bt-stakecur" value="USDT"></div>
+        <div style="flex:2;min-width:280px">
+          <label for="bt-pair-search">Pairs</label>
+          <div class="picker">
+            <div class="chips" id="bt-pair-chips"></div>
+            <input id="bt-pair-search" placeholder="Type to search, click to add…" autocomplete="off">
+            <div id="bt-pair-list" class="options" hidden></div>
+          </div>
+          <p class="hint" id="bt-pair-note" style="margin:5px 0 0"></p>
+        </div>
+        <div><label for="bt-stakecur">Quote currency</label><select id="bt-stakecur"></select></div>
       </div>
       <div class="row">
         <div><label for="bt-from">From</label><input id="bt-from" type="date"></div>
@@ -338,9 +371,36 @@
       </div>
       <p id="bt-estimate" class="muted" style="font-size:12.5px;margin:6px 0 0"></p>
       <div class="row">
-        <div><label for="bt-balance">Starting balance</label><input id="bt-balance" type="number" value="1000"></div>
-        <div><label for="bt-stake">Stake per trade</label><input id="bt-stake" type="number" value="100"></div>
-        <div><label for="bt-slots">Max open trades</label><input id="bt-slots" type="number" value="3"></div>
+        <div>
+          <label for="bt-balance">Starting balance</label>
+          <input id="bt-balance" type="number" value="1000">
+          <div class="chips" data-preset-for="bt-balance">
+            <button class="btn tiny" data-value="1000">1k</button>
+            <button class="btn tiny" data-value="5000">5k</button>
+            <button class="btn tiny" data-value="10000">10k</button>
+            <button class="btn tiny" data-value="100000">100k</button>
+          </div>
+        </div>
+        <div>
+          <label for="bt-stake">Stake per trade</label>
+          <input id="bt-stake" type="number" value="100">
+          <div class="chips" data-preset-for="bt-stake">
+            <button class="btn tiny" data-value="10">10</button>
+            <button class="btn tiny" data-value="50">50</button>
+            <button class="btn tiny" data-value="100">100</button>
+            <button class="btn tiny" data-value="500">500</button>
+          </div>
+        </div>
+        <div>
+          <label for="bt-slots">Max open trades</label>
+          <input id="bt-slots" type="number" value="3">
+          <div class="chips" data-preset-for="bt-slots">
+            <button class="btn tiny" data-value="1">1</button>
+            <button class="btn tiny" data-value="3">3</button>
+            <button class="btn tiny" data-value="5">5</button>
+            <button class="btn tiny" data-value="10">10</button>
+          </div>
+        </div>
       </div>
       <div class="actions"><button class="btn primary" id="bt-run">Queue backtest</button>
         <button class="btn" id="bt-refresh">Refresh</button></div>
@@ -392,7 +452,7 @@
       <div class="scroll"><table><thead><tr>
         <th>Pair</th><th class="r">Trades</th><th class="r">W/L</th>
         <th class="r">Profit</th><th class="r">%</th><th></th>
-      </tr></thead><tbody id="bt-pairs">
+      </tr></thead><tbody id="bt-pair-rows">
         <tr><td colspan="6" class="empty">&mdash;</td></tr>
       </tbody></table></div>
 
@@ -429,6 +489,8 @@
     </div>
     <div class="card">
       <h2>Queue</h2>
+      <p class="hint">Work still outstanding, plus anything that failed. Completed runs
+        move to Results above.</p>
       <div class="scroll"><table><thead><tr>
         <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
       </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
@@ -715,9 +777,104 @@ async function loadCatalog() {
     <td class="muted"><code>${i.outputs.map(esc).join(", ")}</code></td></tr>`).join("");
   try {
     const ex = await api("/api/catalog/exchanges");
-    $("exchange-list").innerHTML = ex.exchanges.map(e => `<option value="${esc(e)}">`).join("");
-  } catch { /* the picker still accepts free text */ }
+    // The handful people actually reach for, then everything else. ccxt lists
+    // over a hundred venues and an alphabetical wall buries the useful ones.
+    const common = ["binance", "kucoin", "okx", "bybit", "coinbase", "kraken"]
+      .filter(e => ex.exchanges.includes(e));
+    const rest = ex.exchanges.filter(e => !common.includes(e));
+    $("bt-exchange").innerHTML =
+      common.map(e => `<option ${e === "kucoin" ? "selected" : ""}>${esc(e)}</option>`).join("") +
+      '<option disabled>──────────</option>' +
+      rest.map(e => `<option>${esc(e)}</option>`).join("");
+  } catch { /* loadMarkets reports the failure where the user is looking */ }
+  loadMarkets();
 }
+
+// ── pair picker ─────────────────────────────────────────────
+// Typing pair symbols by hand is how you find out, after a backtest comes back
+// empty, that this venue spells it XBT/USD. The list comes from the exchange.
+let allPairs = [], chosenPairs = ["BTC/USDT", "ETH/USDT"];
+
+async function loadMarkets() {
+  const venue = $("bt-exchange").value;
+  const note = $("bt-pair-note");
+  note.textContent = "Loading pairs…";
+  try {
+    const m = await api(`/api/catalog/markets?exchange=${encodeURIComponent(venue)}`);
+    allPairs = m.pairs;
+    const quotes = m.quotes.length ? m.quotes : ["USDT"];
+    const current = $("bt-stakecur").value;
+    const keep = quotes.includes(current) ? current
+               : quotes.includes("USDT") ? "USDT" : quotes[0];
+    $("bt-stakecur").innerHTML = quotes.map(q =>
+      `<option ${q === keep ? "selected" : ""}>${esc(q)}</option>`).join("");
+
+    // A pair this venue does not list would fail later with a confusing
+    // download error. Drop it here, and say which, rather than silently.
+    const listed = new Set(allPairs.map(p => p.symbol));
+    const dropped = chosenPairs.filter(x => !listed.has(x));
+    chosenPairs = chosenPairs.filter(x => listed.has(x));
+    note.textContent = `${m.count.toLocaleString()} pairs on ${venue}` +
+      (dropped.length ? ` — removed ${dropped.join(", ")}, not listed here` : "");
+    renderPairChips();
+  } catch (e) {
+    note.textContent = `Could not load pairs: ${e.message}`;
+  }
+}
+
+function renderPairChips() {
+  $("bt-pair-chips").innerHTML = chosenPairs.length
+    ? chosenPairs.map(x => `<span class="chip-pair">${esc(x)}<button type="button"
+        data-drop="${esc(x)}" aria-label="Remove ${esc(x)}">&times;</button></span>`).join("")
+    : '<span class="muted" style="font-size:12px">No pairs selected</span>';
+  document.querySelectorAll("[data-drop]").forEach(b => b.onclick = () => {
+    chosenPairs = chosenPairs.filter(x => x !== b.dataset.drop);
+    renderPairChips();
+  });
+  candleEstimate();
+}
+
+function showPairOptions(term) {
+  const quote = $("bt-stakecur").value;
+  const needle = term.trim().toUpperCase();
+  const matches = allPairs
+    .filter(x => x.quote === quote && !chosenPairs.includes(x.symbol))
+    .filter(x => !needle || x.symbol.includes(needle))
+    .slice(0, 60);
+  const box = $("bt-pair-list");
+  box.innerHTML = matches.length
+    ? matches.map(x => `<button type="button" data-add="${esc(x.symbol)}">
+        <span>${esc(x.base)}<span class="q">/${esc(x.quote)}</span></span>
+        ${x.min_cost ? `<span class="q">min ${fmtNum(x.min_cost, 2)}</span>` : ""}</button>`).join("")
+    : `<button type="button" disabled><span class="q">nothing matches that</span></button>`;
+  box.hidden = false;
+  box.querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+    if (!chosenPairs.includes(b.dataset.add)) chosenPairs.push(b.dataset.add);
+    $("bt-pair-search").value = "";
+    box.hidden = true;
+    renderPairChips();
+  });
+}
+
+$("bt-pair-search").addEventListener("focus", (e) => showPairOptions(e.target.value));
+$("bt-pair-search").addEventListener("input", (e) => showPairOptions(e.target.value));
+$("bt-pair-search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("bt-pair-list").hidden = true;
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".picker")) $("bt-pair-list").hidden = true;
+});
+$("bt-exchange").addEventListener("change", loadMarkets);
+$("bt-stakecur").addEventListener("change", renderPairChips);
+
+// Number fields keep free entry and gain one-click values.
+document.querySelectorAll("[data-preset-for]").forEach(group => {
+  const target = $(group.dataset.presetFor);
+  group.querySelectorAll("[data-value]").forEach(b => b.onclick = () => {
+    target.value = b.dataset.value;
+    target.dispatchEvent(new Event("change"));
+  });
+});
 
 // ── builder ─────────────────────────────────────────────────
 $("b-example").onclick = () => {
@@ -789,11 +946,11 @@ async function loadStrategies() {
 $("bt-run").onclick = async () => {
   const choice = $("bt-strategy").value;
   const body = {
-    exchange: $("bt-exchange").value.trim(),
+    exchange: $("bt-exchange").value,
     timeframe: $("bt-tf").value,
-    pairs: $("bt-pairs").value.split(",").map(p => p.trim().toUpperCase()).filter(Boolean),
+    pairs: chosenPairs.slice(),
     timerange: selectedTimerange(),
-    stake_currency: $("bt-stakecur").value.trim().toUpperCase(),
+    stake_currency: $("bt-stakecur").value,
     stake_amount: Number($("bt-stake").value) || null,
     starting_balance: Number($("bt-balance").value),
     max_open_trades: Number($("bt-slots").value),
@@ -815,10 +972,15 @@ $("bt-refresh").onclick = () => { loadJobs(); loadRuns(); };
 let runsByJob = new Map();
 
 async function loadJobs() {
-  const { jobs } = await api("/api/backtests/jobs");
+  const { jobs: everything } = await api("/api/backtests/jobs");
+  // Only work that is actually outstanding. A finished job's real home is the
+  // results table; leaving it here made the queue a second, worse history.
+  // Failures stay: nothing else surfaces them, and they need a reason shown.
+  const jobs = everything.filter(j =>
+    j.status === "queued" || j.status === "running" || j.status === "failed");
   const cls = { completed: "ok", failed: "bad", running: "info", queued: "neutral", cancelled: "neutral" };
   $("job-rows").innerHTML = jobs.length ? jobs.map(j => {
-    const run = runsByJob.get(j.id);
+    const run = j.status === "completed" ? runsByJob.get(j.id) : null;
     return `<tr ${run ? `data-jobrun="${esc(run.id)}" style="cursor:pointer" title="Open this result"` : ""}>
       <td><span class="pill ${cls[j.status] || "neutral"}">${esc(j.status)}</span></td>
       <td>${esc(j.builtin_strategy || "builder")}</td>
@@ -827,7 +989,7 @@ async function loadJobs() {
       <td>${jobProgress(j)}</td>
       <td class="muted">${shortDate(j.created_at)}</td></tr>`;
   }).join("")
-    : '<tr><td colspan="6" class="empty">No jobs</td></tr>';
+    : '<tr><td colspan="6" class="empty">Nothing queued — finished runs are in Results above</td></tr>';
 
   document.querySelectorAll("[data-jobrun]").forEach(row => row.onclick = () => {
     const r = [...runsByJob.values()].find(x => x.id === row.dataset.jobrun);
@@ -948,7 +1110,7 @@ async function loadWallets() {
       const out = await api(`/api/accounts/${b.dataset.verify}/verify`, {
         method: "POST", body: JSON.stringify({
           kind: "preflight",
-          pairs: $("bt-pairs").value.split(",").map(p => p.trim().toUpperCase()).filter(Boolean),
+          pairs: chosenPairs.slice(),
           stake_amount: Number($("bt-stake").value) || 10,
           max_open_trades: Number($("bt-slots").value) || 1,
         })});
@@ -1276,7 +1438,7 @@ document.querySelectorAll("#bt-presets [data-years]").forEach(b => b.onclick = (
 function candleEstimate() {
   const from = $("bt-from").value, to = $("bt-to").value;
   const tf = $("bt-tf").value;
-  const pairs = $("bt-pairs").value.split(",").filter(p => p.trim()).length || 1;
+  const pairs = chosenPairs.length || 1;
   const minutes = { m: 1, h: 60, d: 1440, w: 10080 }[tf?.slice(-1)] * (parseInt(tf) || 1);
   if (!from || !to || !minutes) return $("bt-estimate").textContent = "";
   const span = (new Date(to) - new Date(from)) / 60000;
@@ -1294,18 +1456,18 @@ function candleEstimate() {
   $("bt-estimate").textContent = `About ${pretty} candles (${each.toLocaleString()} per pair)${advice}`;
   $("bt-estimate").className = total > 2_000_000 ? "neg" : "muted";
 }
-["bt-from", "bt-to", "bt-tf", "bt-pairs"].forEach(id =>
+["bt-from", "bt-to", "bt-tf"].forEach(id =>
   $(id)?.addEventListener("change", candleEstimate));
 document.querySelectorAll("#bt-presets [data-years]").forEach(b =>
   b.addEventListener("click", () => setTimeout(candleEstimate, 0)));
 
 $("bt-history").onclick = async () => {
-  const pairs = $("bt-pairs").value.trim();
-  if (!pairs) return toast("Name at least one pair first.", true);
+  const pairs = chosenPairs.join(",");
+  if (!pairs) return toast("Choose at least one pair first.", true);
   const out = $("bt-history-out");
   out.textContent = "Asking the exchange…";
   try {
-    const q = new URLSearchParams({ exchange: $("bt-exchange").value.trim() || "kucoin",
+    const q = new URLSearchParams({ exchange: $("bt-exchange").value || "kucoin",
                                     pairs, timeframe: "1d" });
     const r = await api(`/api/catalog/history?${q}`);
     const parts = r.pairs.map(p => p.error
@@ -1690,7 +1852,7 @@ async function loadRunDetail(runId, run) {
     const detail = await api(`/api/backtests/${runId}`);
     const pairs = detail.pairs || [];
     const worst = Math.max(...pairs.map(p => Math.abs(Number(p.profit_abs) || 0)), 1);
-    $("bt-pairs").innerHTML = pairs.length ? pairs.map(p => {
+    $("bt-pair-rows").innerHTML = pairs.length ? pairs.map(p => {
       const v = Number(p.profit_abs) || 0;
       return `<tr>
         <td><strong>${esc(p.pair)}</strong></td>
