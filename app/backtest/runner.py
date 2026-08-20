@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import sys
 import uuid
@@ -382,6 +383,38 @@ def _requested_bounds(timerange: str | None) -> tuple[datetime | None, datetime 
     return one(start), one(end)
 
 
+def _watch_backfill(data_dir, request, want_start, from_start, progress):
+    """Report how far back the download has reached, while it is still running.
+
+    freqtrade prints its own progress bars to a pipe nobody reads here, and the
+    stage number alone cannot distinguish "downloading" from "hung". The cache
+    files are the honest signal: their first candle moves earlier as the fetch
+    proceeds.
+    """
+    stop = threading.Event()
+    if progress is None or want_start is None:
+        stop.set()
+        return stop
+
+    def watch():
+        while not stop.wait(20):
+            reached = _cached_start(data_dir, request.pairs, request.timeframe)
+            if reached is None:
+                continue
+            span = (from_start or datetime.now(timezone.utc)) - want_start
+            done = (from_start or datetime.now(timezone.utc)) - reached
+            if span.total_seconds() <= 0:
+                continue
+            share = max(0.0, min(1.0, done.total_seconds() / span.total_seconds()))
+            progress(
+                f"downloading history — reached {reached:%Y-%m-%d} of "
+                f"{want_start:%Y-%m-%d} ({share * 100:.0f}%)"
+            )
+
+    threading.Thread(target=watch, daemon=True, name="backfill-watch").start()
+    return stop
+
+
 def _requested_span_days(timerange: str | None) -> int | None:
     """Days from the requested start until now, for --new-pairs-days.
 
@@ -543,9 +576,20 @@ def run_backtest(
                         reached = previous.date().isoformat() if previous else "…"
                         progress(f"extending history backwards (pass {attempt}, "
                                  f"have from {reached})")
-                    code, output = _run(base_cmd + timerange_args + ["--prepend"],
-                                        cwd=workdir, timeout=timeout_seconds,
-                                        should_stop=should_stop)
+                    # A single prepend pass fetches the entire gap, which for ten
+                    # years of 5m candles is about a million bars per pair and
+                    # many minutes of silence. Watch the cache while it works so
+                    # the bar reflects how far back it has actually reached
+                    # rather than sitting on the stage number.
+                    watcher = _watch_backfill(
+                        data_path, request, want_start, previous, progress,
+                    )
+                    try:
+                        code, output = _run(base_cmd + timerange_args + ["--prepend"],
+                                            cwd=workdir, timeout=timeout_seconds,
+                                            should_stop=should_stop)
+                    finally:
+                        watcher.set()
                     if code != 0:
                         log.warning("download-data --prepend exited %s: %s",
                                     code, output[-400:])

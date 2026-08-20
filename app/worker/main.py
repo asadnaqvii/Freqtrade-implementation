@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -123,12 +124,16 @@ STAGE_PROGRESS: dict[str, tuple[int, str]] = {
 #: Substrings the runner emits, mapped to a stage. Kept here rather than passing
 #: stage keys through the runner so the runner stays a plain subprocess driver.
 _STAGE_HINTS = (
+    ("downloading history —", "download_history"),
     ("extending history backwards", "download_history"),
     ("fetching recent candles", "download_recent"),
     ("downloading", "download_recent"),
     ("running freqtrade backtesting", "backtesting"),
     ("parsing", "parsing"),
 )
+
+
+_SHARE_RE = re.compile(r"\((\d+)%\)")
 
 
 def _stage_for(message: str) -> str | None:
@@ -139,6 +144,23 @@ def _stage_for(message: str) -> str | None:
     return None
 
 
+def _progress_within(stage: str, message: str) -> int | None:
+    """Turn "(43%)" inside a download message into a point on the whole bar.
+
+    Backfilling ten years of candles is most of the wall clock, so the bar has
+    to move inside that stage or it reads as hung -- which is exactly how it
+    read sitting at 15 for minutes on end.
+    """
+    if stage != "download_history":
+        return None
+    found = _SHARE_RE.search(message)
+    if not found:
+        return None
+    share = max(0, min(100, int(found.group(1)))) / 100
+    low, high = STAGE_PROGRESS["download_history"][0], STAGE_PROGRESS["download_recent"][0]
+    return int(low + (high - low) * share)
+
+
 def _progress(client: SupabaseClient, job_id: str):
     def report(message: str, *, stage: str | None = None) -> None:
         log.info("job %s: %s", job_id, message)
@@ -146,7 +168,10 @@ def _progress(client: SupabaseClient, job_id: str):
         values: dict[str, Any] = {"progress": message[:500], "heartbeat_at": _now()}
         if stage and stage in STAGE_PROGRESS:
             values["stage"] = stage
-            values["progress_pct"] = STAGE_PROGRESS[stage][0]
+            within = _progress_within(stage, message)
+            values["progress_pct"] = (
+                within if within is not None else STAGE_PROGRESS[stage][0]
+            )
         try:
             client.update("backtest_jobs", values, filters={"id": f"eq.{job_id}"})
         except Exception as exc:

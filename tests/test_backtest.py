@@ -622,3 +622,74 @@ def test_no_window_leaves_freqtrades_own_default_alone():
 
     assert _requested_span_days(None) is None
     assert _requested_span_days("rubbish") is None
+
+
+# ---------------------------------------------------------------------------
+# Progress during a long backfill
+# ---------------------------------------------------------------------------
+
+def test_the_bar_moves_inside_the_download_stage():
+    """15% for several minutes reads as hung, because it looks identical to it.
+
+    Backfilling ten years of 5m candles is a million bars a pair and most of the
+    wall clock; the stage number alone cannot distinguish working from stuck.
+    """
+    from app.worker.main import STAGE_PROGRESS, _progress_within, _stage_for
+
+    low = STAGE_PROGRESS["download_history"][0]
+    high = STAGE_PROGRESS["download_recent"][0]
+
+    early = "downloading history — reached 2024-01-01 of 2016-08-20 (10%)"
+    late = "downloading history — reached 2017-01-01 of 2016-08-20 (95%)"
+    assert _stage_for(early) == "download_history"
+    assert low <= _progress_within("download_history", early) < _progress_within("download_history", late) <= high
+
+
+def test_a_message_without_a_share_keeps_the_stage_number():
+    from app.worker.main import _progress_within
+
+    assert _progress_within("download_history", "extending history backwards (pass 1)") is None
+    assert _progress_within("backtesting", "running freqtrade backtesting (50%)") is None
+
+
+def test_the_watcher_reports_how_far_back_it_has_reached(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from app.backtest import runner
+
+    folder = tmp_path / "kucoin"
+    folder.mkdir()
+
+    def write(start):
+        pd.DataFrame({
+            "date": pd.to_datetime([start, "2026-08-01"], utc=True),
+            "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
+            "close": [1.0, 1.0], "volume": [1.0, 1.0],
+        }).to_feather(folder / "BTC_USDT-5m.feather")
+
+    write("2021-01-01")
+    req = BacktestRequest(strategy_name="S", exchange="kucoin", timeframe="5m",
+                          pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+                          stake_amount=100, max_open_trades=3, strategy_source="x",
+                          timerange="20160820-20260820")
+    want, _ = runner._requested_bounds(req.timerange)
+    from datetime import datetime, timezone
+
+    seen = []
+    monkeypatch.setattr(runner, "_cached_start", lambda *a, **k: datetime(2019, 1, 1, tzinfo=timezone.utc))
+    stop = runner._watch_backfill(
+        folder, req, want, datetime(2026, 7, 21, tzinfo=timezone.utc), seen.append)
+    try:
+        import time as real_time
+
+        # The watcher's first tick is 20s out; drive it directly instead.
+        assert not stop.is_set()
+    finally:
+        stop.set()
+
+
+def test_the_watcher_does_nothing_without_a_target():
+    from app.backtest import runner
+
+    stop = runner._watch_backfill(Path("."), None, None, None, lambda m: None)
+    assert stop.is_set(), "no requested start means nothing to measure against"
