@@ -347,7 +347,7 @@ def test_cached_start_takes_the_newest_pair_start():
             "close": [1.0, 2.0], "volume": [1.0, 2.0],
         }).to_feather(folder / f"{stem}-1d.feather")
 
-    found = _cached_start(root, "kucoin", ["BTC/USDT", "ETH/USDT"], "1d")
+    found = _cached_start(folder, ["BTC/USDT", "ETH/USDT"], "1d")
     assert found.date().isoformat() == "2021-02-04"
 
 
@@ -355,8 +355,7 @@ def test_cached_start_is_unknown_when_a_pair_has_no_file():
     from app.backtest.runner import _cached_start
 
     root = Path(tempfile.mkdtemp())
-    (root / "kucoin").mkdir(parents=True)
-    assert _cached_start(root, "kucoin", ["BTC/USDT"], "1d") is None
+    assert _cached_start(root, ["BTC/USDT"], "1d") is None
 
 
 def test_requested_bounds_parses_both_halves():
@@ -366,3 +365,27 @@ def test_requested_bounds_parses_both_halves():
     assert start.year == 2020 and end.year == 2026
     assert _requested_bounds(None) == (None, None)
     assert _requested_bounds("nonsense") == (None, None)
+
+
+def test_each_exchange_gets_its_own_candle_cache():
+    """Otherwise every venue writes BTC_USDT-1d.feather to the same path.
+
+    freqtrade's create_datadir only appends the exchange name when it picks the
+    directory itself; an explicit --datadir is used verbatim. So KuCoin's
+    candles and Binance's shared one file, and a backtest "on Binance" could be
+    scored against KuCoin's prices with nothing to indicate it.
+    """
+    from app.backtest.runner import build_config
+
+    root = Path(tempfile.mkdtemp())
+    made = []
+    for venue in ("binance", "kucoin"):
+        request = BacktestRequest(
+            strategy_name="S", exchange=venue, timeframe="1d",
+            pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+            stake_amount=100, max_open_trades=3, strategy_source="x",
+        )
+        path = root / request.exchange.lower()
+        made.append(str(build_config(request, data_dir=path, user_dir=root)["datadir"]))
+    assert made[0] != made[1]
+    assert made[0].endswith("binance") and made[1].endswith("kucoin")

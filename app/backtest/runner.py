@@ -275,19 +275,20 @@ def _requested_bounds(timerange: str | None) -> tuple[datetime | None, datetime 
     return one(start), one(end)
 
 
-def _cached_start(data_dir: Path, exchange: str, pairs: list[str], timeframe: str) -> datetime | None:
+def _cached_start(data_dir: Path, pairs: list[str], timeframe: str) -> datetime | None:
     """The oldest candle currently on disk across these pairs.
 
     A backtest spans its pairs together, so the newest of the per-pair starts is
     what actually bounds the window. Used to tell whether another prepend pass
-    achieved anything.
+    achieved anything -- when this could not find the files it always answered
+    None, the loop concluded "no progress" and gave up after one pass.
     """
     try:
         import pandas as pd
     except ImportError:  # pragma: no cover - pandas is a hard dependency here
         return None
 
-    folder = data_dir / exchange.lower()
+    folder = data_dir
     starts: list[datetime] = []
     for pair in pairs:
         stem = pair.replace("/", "_").replace(":", "_")
@@ -321,7 +322,14 @@ def run_backtest(
     """Download data if needed, run the backtest, return the parsed export."""
     request.validate()
 
-    data_path = Path(data_dir)
+    # One cache directory per exchange, and this is not cosmetic. freqtrade's
+    # create_datadir only appends the exchange name when it is choosing the
+    # directory itself; passing --datadir explicitly makes it use that path
+    # verbatim. So every venue's candles were landing in one flat folder under
+    # the same name -- BTC_USDT-1d.feather written by KuCoin, then appended to
+    # and read back by a Binance run. A backtest "on Binance" could be scoring a
+    # strategy against KuCoin's prices without anything saying so.
+    data_path = Path(data_dir) / request.exchange.lower()
     user_path = Path(user_dir)
 
     # Each run gets its own strategy and results directories. Sharing them means
@@ -376,6 +384,17 @@ def run_backtest(
             # decade, which is the worst possible way to be wrong.
             want_start, _ = _requested_bounds(request.timerange)
 
+            # Establish the cache first. --prepend extends an existing dataset
+            # backwards; with nothing on disk it does nothing at all, which is
+            # why the loop below used to exit after a single fruitless pass.
+            if progress:
+                progress("fetching candles")
+            code, output = _run(base_cmd + timerange_args, cwd=workdir, timeout=timeout_seconds)
+            if code != 0:
+                log.warning("download-data exited %s: %s", code, output[-400:])
+                if progress:
+                    progress("download failed; continuing on cached candles")
+
             # Prepend repeatedly rather than once. A single pass reaches back
             # only so far -- exchanges cap candles per request and freqtrade
             # does not loop indefinitely -- which is why asking for six years
@@ -383,8 +402,7 @@ def run_backtest(
             # going while each pass actually moves the start earlier, and stop
             # the moment it does not: that is the real end of the history.
             if request.timerange:
-                previous = _cached_start(data_path, request.exchange, request.pairs,
-                                         request.timeframe)
+                previous = _cached_start(data_path, request.pairs, request.timeframe)
                 for attempt in range(1, MAX_PREPEND_PASSES + 1):
                     if want_start and previous and previous <= want_start:
                         break
@@ -398,8 +416,7 @@ def run_backtest(
                         log.warning("download-data --prepend exited %s: %s",
                                     code, output[-400:])
                         break
-                    current = _cached_start(data_path, request.exchange, request.pairs,
-                                            request.timeframe)
+                    current = _cached_start(data_path, request.pairs, request.timeframe)
                     if current is None or (previous is not None and current >= previous):
                         # No further back than last time: this is the venue's
                         # earliest candle, not a cap we can push through.
@@ -407,18 +424,7 @@ def run_backtest(
                         break
                     previous = current
 
-            for label, cmd in (("fetching recent candles", base_cmd + timerange_args),):
-                if progress:
-                    progress(label)
-                code, output = _run(cmd, cwd=workdir, timeout=timeout_seconds)
-                if code != 0:
-                    # Not always fatal -- cached data may already cover the
-                    # window -- but the coverage check after the backtest now
-                    # decides that on evidence rather than on hope.
-                    log.warning("download-data (%s) exited %s: %s",
-                                label, code, output[-400:])
-                    if progress:
-                        progress(f"{label}: download failed, continuing on cached candles")
+
 
         export_file = results_dir / f"{request.strategy_name}.json"
 
