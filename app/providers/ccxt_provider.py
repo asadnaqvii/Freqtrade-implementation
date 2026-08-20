@@ -237,22 +237,58 @@ class CcxtProvider(WalletProvider):
         return sorted(balances, key=lambda b: -b.total)
 
     def earliest_candle(self, symbol: str, timeframe: str = "1d") -> datetime | None:
-        """The timestamp of the oldest candle the venue will serve for a pair.
+        """When this venue's history for a pair begins.
 
-        `since=0` asks for the beginning of time; exchanges answer with the
-        beginning of *their* time, which is the number worth knowing before
-        promising someone a ten-year backtest.
+        Two things make this less trivial than it looks. Markets have to be
+        loaded first or ccxt cannot resolve the symbol at all. And `since=0` is
+        not portable: some venues answer it with their oldest candle, others
+        answer with nothing, which is indistinguishable from "no such pair".
+
+        So: ask for the beginning of time, and if that comes back empty, binary
+        search for the boundary. About fifteen requests, and it gives a real
+        answer on any venue rather than a guess that happens to work on one.
         """
         try:
-            rows = self.exchange.fetch_ohlcv(symbol, timeframe, since=0, limit=1)
+            self.exchange.load_markets()
         except Exception as exc:
             raise self._translate(exc) from exc
-        if not rows:
+
+        markets = getattr(self.exchange, "markets", None) or {}
+        if symbol not in markets:
+            raise ProviderError(f"{self.ccxt_id} does not list {symbol}")
+
+        def candles_from(since_ms: int) -> list:
+            try:
+                return self.exchange.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=1) or []
+            except Exception as exc:
+                raise self._translate(exc) from exc
+
+        def to_dt(rows: list) -> datetime | None:
+            try:
+                return datetime.fromtimestamp(rows[0][0] / 1000, tz=timezone.utc)
+            except (TypeError, ValueError, IndexError, OSError):
+                return None
+
+        # 2010: comfortably before any crypto exchange this code will meet.
+        floor_ms = int(datetime(2010, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        rows = candles_from(floor_ms)
+        if rows:
+            return to_dt(rows)
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if not candles_from(now_ms - 7 * 86400_000):
+            # Nothing recent either: the venue has no history for this pair at
+            # this timeframe, which is a real answer and not a failure.
             return None
-        try:
-            return datetime.fromtimestamp(rows[0][0] / 1000, tz=timezone.utc)
-        except (TypeError, ValueError, IndexError, OSError):
-            return None
+
+        lo, hi = floor_ms, now_ms
+        while hi - lo > 86400_000:          # stop once the gap is under a day
+            mid = (lo + hi) // 2
+            if candles_from(mid):
+                hi = mid
+            else:
+                lo = mid
+        return to_dt(candles_from(hi))
 
     def fetch_markets(self) -> dict[str, MarketInfo]:
         if self._markets is not None:

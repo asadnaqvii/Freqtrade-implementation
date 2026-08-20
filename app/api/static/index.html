@@ -163,6 +163,38 @@
   .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
   .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
 
+  .chartwrap { position:relative; }
+  .chartwrap .tip {
+    position:absolute; top:4px; pointer-events:none; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius-sm); padding:6px 9px;
+    font-size:11.5px; box-shadow:var(--shadow); white-space:nowrap; z-index:5;
+    font-variant-numeric:tabular-nums;
+  }
+  .chart .cross { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+
+  table.heat { border-collapse:separate; border-spacing:2px; }
+  table.heat th, table.heat td { border:none; padding:0; }
+  table.heat th.hm {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    background:none; text-align:center; padding-bottom:3px;
+  }
+  table.heat td.hm {
+    text-align:center; padding:7px 9px; border-radius:5px; font-size:11.5px;
+    font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; min-width:46px;
+  }
+  table.heat td.empty-cell { background:var(--panel-2); opacity:.4; }
+  table.heat th.yr, table.heat td.yr {
+    font-size:11.5px; font-weight:600; color:var(--text); background:none;
+    padding-right:10px; white-space:nowrap;
+  }
+
+  .progress {
+    height:6px; border-radius:3px; background:var(--panel-3); overflow:hidden;
+    min-width:110px; margin-top:4px;
+  }
+  .progress > i { display:block; height:100%; border-radius:3px; background:var(--accent);
+                  transition:width .4s ease; }
+
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
   .chips .btn.active {
     background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600;
@@ -322,7 +354,22 @@
       <h2>Result detail</h2>
       <p class="hint" id="bt-detail-title"></p>
 
-      <h3 style="margin:6px 0 8px;font-size:13px">Is this result worth believing?</h3>
+      <div id="bt-coverage"></div>
+      <div class="kpis" id="bt-metrics" style="margin-bottom:20px"></div>
+
+      <h3 style="margin:22px 0 4px;font-size:13px">Account balance</h3>
+      <p class="hint">Every candle of the run, not just the trades.</p>
+      <div id="bt-equity"><div class="empty">&mdash;</div></div>
+
+      <h3 style="margin:22px 0 4px;font-size:13px">How far below the peak</h3>
+      <p class="hint">The same period, drawn as depth under the high-water mark. This is the
+        part you would have had to sit through.</p>
+      <div id="bt-drawdown"></div>
+
+      <h3 style="margin:22px 0 4px;font-size:13px">Month by month</h3>
+      <div id="bt-heatmap"><div class="empty">&mdash;</div></div>
+
+      <h3 style="margin:22px 0 8px;font-size:13px">Is this result worth believing?</h3>
       <p class="hint">Separate question from whether it made money. A backtest always
         produces a number; this says whether the test was capable of telling you anything.</p>
       <div id="bt-verdict"><div class="empty">Pick a result below</div></div>
@@ -344,6 +391,38 @@
         <th class="r">Balance</th>
       </tr></thead><tbody id="bt-period-rows">
         <tr><td colspan="8" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+
+      <h3 style="margin:26px 0 8px;font-size:13px">By pair</h3>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th class="r">Trades</th><th class="r">W/L</th>
+        <th class="r">Profit</th><th class="r">%</th><th></th>
+      </tr></thead><tbody id="bt-pairs">
+        <tr><td colspan="6" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+
+      <div class="grid3" style="margin-top:22px">
+        <div>
+          <h3 style="margin:0 0 4px;font-size:13px">Spread of trade results</h3>
+          <p class="hint">A few huge wins with many small losses is a different
+            strategy from a steady grind, and the total hides which.</p>
+          <div id="bt-dist"></div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 4px;font-size:13px">Why trades closed</h3>
+          <p class="hint">Mostly stop-loss means it is being stopped out, not exiting.</p>
+          <div id="bt-reasons" class="ranklist"><div class="empty">&mdash;</div></div>
+        </div>
+      </div>
+
+      <h3 style="margin:26px 0 4px;font-size:13px">Trades</h3>
+      <p class="hint" id="bt-trades-note"></p>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Held</th>
+        <th class="r">Entry</th><th class="r">Exit</th><th class="r">Profit</th>
+        <th class="r">%</th><th>Reason</th>
+      </tr></thead><tbody id="bt-trades">
+        <tr><td colspan="9" class="empty">&mdash;</td></tr>
       </tbody></table></div>
     </div>
 
@@ -739,9 +818,38 @@ async function loadJobs() {
       <td>${esc(j.builtin_strategy || "builder")}</td>
       <td class="muted">${esc((j.pairs || []).join(", ").slice(0, 40))}</td>
       <td class="muted">${esc(j.timerange || "all")}</td>
-      <td class="muted">${esc(j.error || j.progress || "")}</td>
+      <td>${jobProgress(j)}</td>
       <td class="muted">${shortDate(j.created_at)}</td></tr>`).join("")
     : '<tr><td colspan="6" class="empty">No jobs</td></tr>';
+
+  // A running job's bar moves on its own. Only while the tab is visible: a
+  // backgrounded browser polling every five seconds forever is rude to both
+  // the worker and the battery.
+  const busy = jobs.some(j => j.status === "running" || j.status === "queued");
+  clearTimeout(loadJobs._t);
+  if (busy && document.visibilityState === "visible") {
+    loadJobs._t = setTimeout(() => loadJobs().catch(() => {}), 5000);
+  }
+}
+
+function jobProgress(j) {
+  if (j.error) return `<span class="neg">${esc(j.error.slice(0, 90))}</span>`;
+  if (j.status === "completed") return `<span class="muted">${esc(j.progress || "done")}</span>`;
+  if (j.status !== "running" && j.status !== "queued") {
+    return `<span class="muted">${esc(j.progress || "")}</span>`;
+  }
+  const pct = j.progress_pct ?? (j.status === "queued" ? 0 : 3);
+  const started = j.started_at ? new Date(j.started_at) : null;
+  const elapsed = started ? Math.round((Date.now() - started) / 1000) : null;
+  const clock = elapsed == null ? ""
+    : elapsed < 90 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+  return `<div style="min-width:190px">
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px">
+      <span>${esc(j.progress || "waiting for a worker")}</span>
+      <span class="muted num">${pct}%${clock ? " · " + clock : ""}</span>
+    </div>
+    <div class="progress"><i style="width:${pct}%"></i></div>
+  </div>`;
 }
 
 async function loadRuns() {
@@ -765,7 +873,7 @@ async function loadRuns() {
     const r = runs.find(x => x.id === row.dataset.run);
     openRun(row.dataset.run,
             `${r.strategy_name} · ${(r.pairs || []).join(", ")} · ${r.timeframe} · ` +
-            `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`);
+            `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`, r);
   });
 }
 
@@ -1163,10 +1271,11 @@ function verdictPill(v) {
   return { good: "ok", weak: "warn", bad: "bad" }[v] || "neutral";
 }
 
-async function openRun(runId, title) {
+async function openRun(runId, title, run) {
   currentRun = runId;
   $("bt-detail").hidden = false;
   $("bt-detail-title").textContent = title;
+  if (run) loadRunDetail(runId, run).catch(e => console.warn("detail", e));
   $("bt-verdict").innerHTML = '<div class="empty">Checking…</div>';
   $("bt-detail").scrollIntoView({ behavior: "smooth", block: "start" });
 
@@ -1187,6 +1296,11 @@ async function openRun(runId, title) {
   } catch (e) { $("bt-verdict").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 
   loadBreakdown(runId);
+  if (currentPeriod !== "month") {
+    api(`/api/backtests/${runId}/breakdown?period=month`)
+      .then(b => { $("bt-heatmap").innerHTML = monthlyHeatmap(b.rows); })
+      .catch(() => {});
+  }
 }
 
 // Bars are per-period profit; the line is the account balance across them. Same
@@ -1248,6 +1362,9 @@ async function loadBreakdown(runId) {
       </div>`;
 
     $("bt-period-chart").innerHTML = periodChart(b.rows, cur);
+    if (currentPeriod === "month") {
+      $("bt-heatmap").innerHTML = monthlyHeatmap(b.rows);
+    }
 
     $("bt-period-rows").innerHTML = b.rows.length ? b.rows.map(r => `<tr>
         <td><strong>${esc(r.label)}</strong></td>
@@ -1262,6 +1379,308 @@ async function loadBreakdown(runId) {
       : '<tr><td colspan="8" class="empty">No closed trades in this run</td></tr>';
   } catch (e) {
     $("bt-period-rows").innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ── backtest result detail ──────────────────────────────────
+// Charts are hand-built SVG: the page has no build step and a CSP that admits
+// no external scripts, and these are simple enough that a library would be more
+// code than the charts.
+//
+// Colour does one job here -- polarity. Gains and losses, diverging from a
+// neutral zero. There is no categorical series anywhere, so there is no hue
+// order to keep and no legend to draw; every chart names itself in its heading.
+// The heatmap prints the number in each cell so the colour is redundant rather
+// than load-bearing.
+
+const CH = { W: 860, H: 210, L: 58, R: 10, T: 12, B: 24 };
+
+function niceTicks(lo, hi, count = 4) {
+  if (!isFinite(lo) || !isFinite(hi) || lo === hi) return [lo || 0];
+  const raw = (hi - lo) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+// A line chart with a crosshair. One series, so no legend -- the heading says
+// what it is.
+function lineChart(points, { id, format = (v) => fmtNum(v), fill = false, colour = "var(--accent)" }) {
+  if (!points || points.length < 2) return '<div class="empty">Not enough points</div>';
+  const xs = points.map(p => +new Date(p.x));
+  const ys = points.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad; hi += pad;
+
+  const px = (v) => CH.L + (v - x0) / ((x1 - x0) || 1) * (CH.W - CH.L - CH.R);
+  const py = (v) => CH.T + (hi - v) / ((hi - lo) || 1) * (CH.H - CH.T - CH.B);
+
+  const path = points.map((p, i) => `${i ? "L" : "M"}${px(xs[i]).toFixed(1)},${py(p.y).toFixed(1)}`).join("");
+  const area = fill
+    ? `<path d="${path}L${px(x1).toFixed(1)},${py(Math.max(lo, 0)).toFixed(1)}L${px(x0).toFixed(1)},${py(Math.max(lo, 0)).toFixed(1)}Z"
+         fill="${colour}" opacity=".12"/>`
+    : "";
+
+  const grid = niceTicks(lo, hi).map(v => `
+    <line class="gl" x1="${CH.L}" y1="${py(v).toFixed(1)}" x2="${CH.W - CH.R}" y2="${py(v).toFixed(1)}"/>
+    <text class="lbl" x="${CH.L - 7}" y="${(py(v) + 3).toFixed(1)}" text-anchor="end">${format(v)}</text>`).join("");
+
+  const days = (x1 - x0) / 86400000;
+  const fmtX = (t) => new Date(t).toISOString().slice(0, days > 400 ? 7 : 10);
+
+  return `<div class="chartwrap" id="${id}">
+    <svg class="chart" viewBox="0 0 ${CH.W} ${CH.H}" role="img"
+         aria-label="${points.length} points from ${fmtX(x0)} to ${fmtX(x1)}"
+         data-x0="${x0}" data-x1="${x1}">
+      ${grid}
+      ${area}
+      <path d="${path}" fill="none" stroke="${colour}" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <line class="cross" x1="0" y1="${CH.T}" x2="0" y2="${CH.H - CH.B}" opacity="0"/>
+      <circle class="dot" r="3.5" fill="${colour}" opacity="0"/>
+      <rect class="hit" x="${CH.L}" y="${CH.T}" width="${CH.W - CH.L - CH.R}"
+            height="${CH.H - CH.T - CH.B}" fill="transparent"/>
+      <text class="lbl" x="${CH.L}" y="${CH.H - 6}">${fmtX(x0)}</text>
+      <text class="lbl" x="${CH.W - CH.R}" y="${CH.H - 6}" text-anchor="end">${fmtX(x1)}</text>
+    </svg>
+    <div class="tip" hidden></div>
+  </div>`;
+}
+
+function attachCrosshair(id, points, render) {
+  const wrap = $(id);
+  if (!wrap) return;
+  const svg = wrap.querySelector("svg"), tip = wrap.querySelector(".tip");
+  const cross = svg.querySelector(".cross"), dot = svg.querySelector(".dot");
+  const xs = points.map(p => +new Date(p.x));
+  const x0 = +svg.dataset.x0, x1 = +svg.dataset.x1;
+  const px = (v) => CH.L + (v - x0) / ((x1 - x0) || 1) * (CH.W - CH.L - CH.R);
+
+  const move = (event) => {
+    const box = svg.getBoundingClientRect();
+    const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+    const local = (clientX - box.left) / box.width * CH.W;
+    const target = x0 + (local - CH.L) / (CH.W - CH.L - CH.R) * (x1 - x0);
+    let best = 0;
+    for (let i = 1; i < xs.length; i++) {
+      if (Math.abs(xs[i] - target) < Math.abs(xs[best] - target)) best = i;
+    }
+    const p = points[best];
+    cross.setAttribute("x1", px(xs[best])); cross.setAttribute("x2", px(xs[best]));
+    cross.setAttribute("opacity", "1");
+    dot.setAttribute("cx", px(xs[best]));
+    dot.setAttribute("cy", svg.querySelector("path[stroke]").getPointAtLength ? dot.getAttribute("cy") : 0);
+    dot.setAttribute("opacity", "0");
+    tip.hidden = false;
+    tip.innerHTML = render(p);
+    const left = Math.min(Math.max(0, (px(xs[best]) / CH.W) * box.width - 60), box.width - 130);
+    tip.style.left = `${left}px`;
+  };
+  svg.addEventListener("mousemove", move);
+  svg.addEventListener("touchmove", move, { passive: true });
+  svg.addEventListener("mouseleave", () => {
+    tip.hidden = true; cross.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0");
+  });
+}
+
+// Diverging by sign: one hue for gains, one for losses, neutral at zero. The
+// number is printed in every cell, so the colour repeats the value rather than
+// being the only way to read it.
+function monthlyHeatmap(rows) {
+  const byYear = new Map();
+  let peak = 0;
+  for (const r of rows) {
+    const [year, month] = String(r.key).split("-").map(Number);
+    if (!year || !month) continue;
+    if (!byYear.has(year)) byYear.set(year, new Array(12).fill(null));
+    const value = r.profit_pct != null ? r.profit_pct : r.profit_abs;
+    byYear.get(year)[month - 1] = { value, row: r };
+    peak = Math.max(peak, Math.abs(value || 0));
+  }
+  if (!byYear.size) return '<div class="empty">No closed months</div>';
+  peak = peak || 1;
+
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const head = `<tr><th></th>${months.map(m => `<th class="hm">${m}</th>`).join("")}<th class="hm">Year</th></tr>`;
+
+  const body = [...byYear.keys()].sort().map(year => {
+    const cells = byYear.get(year);
+    const total = cells.reduce((sum, c) => sum + (c ? c.value : 0), 0);
+    return `<tr><th class="yr">${year}</th>` + cells.map(c => {
+      if (!c) return '<td class="hm empty-cell"></td>';
+      const weight = Math.min(1, Math.abs(c.value) / peak);
+      const hue = c.value >= 0 ? "var(--pos)" : "var(--neg)";
+      // Neutral ground at zero: opacity scales from the surface colour outward,
+      // so a flat month reads as background rather than as a third colour.
+      return `<td class="hm" style="background:color-mix(in srgb, ${hue} ${(weight * 78).toFixed(0)}%, var(--panel))"
+        title="${esc(c.row.label)} · ${c.row.trades} trades · ${fmtNum(c.row.profit_abs)}">${fmtNum(c.value, 1)}</td>`;
+    }).join("") + `<td class="hm yr ${total >= 0 ? "pos" : "neg"}">${fmtNum(total, 1)}</td></tr>`;
+  }).join("");
+
+  return `<div class="scroll"><table class="heat">${head}${body}</table></div>
+    <p class="hint" style="margin-top:8px">Percent of account per month. The number is the
+    value; colour only repeats it.</p>`;
+}
+
+function histogram(values, { buckets = 21 } = {}) {
+  if (!values.length) return "";
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = (hi - lo) || 1;
+  const width = span / buckets;
+  const counts = new Array(buckets).fill(0);
+  for (const v of values) counts[Math.min(buckets - 1, Math.floor((v - lo) / width))]++;
+  const tallest = Math.max(...counts) || 1;
+
+  const W = 860, H = 150, B = 22, L = 34;
+  const bw = (W - L - 8) / buckets;
+  const bars = counts.map((n, i) => {
+    const mid = lo + (i + 0.5) * width;
+    const h = n / tallest * (H - B - 10);
+    return `<rect x="${(L + i * bw + 1).toFixed(1)}" y="${(H - B - h).toFixed(1)}"
+      width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2"
+      fill="var(--${mid >= 0 ? "pos" : "neg"})" opacity=".65">
+      <title>${n} trade${n === 1 ? "" : "s"} between ${fmtNum(lo + i * width)} and ${fmtNum(lo + (i + 1) * width)}</title></rect>`;
+  }).join("");
+  const zero = L + ((0 - lo) / span) * (W - L - 8);
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Distribution of ${values.length} trade results">
+    <line class="zero" x1="${zero.toFixed(1)}" y1="10" x2="${zero.toFixed(1)}" y2="${H - B}"/>
+    ${bars}
+    <text class="lbl" x="${L}" y="${H - 6}">${fmtNum(lo)}</text>
+    <text class="lbl" x="${W - 8}" y="${H - 6}" text-anchor="end">${fmtNum(hi)}</text>
+    <text class="lbl" x="${zero.toFixed(1)}" y="${H - 6}" text-anchor="middle">0</text>
+  </svg>`;
+}
+
+function metricGrid(r) {
+  const cur = r.stake_currency || "";
+  const dd = r.max_drawdown_pct == null ? null : Math.abs(r.max_drawdown_pct);
+  const tile = (k, v, s, cls = "") =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`;
+  const sign = (v, text) => v == null ? "—" : `<span class="${v >= 0 ? "pos" : "neg"}">${text}</span>`;
+
+  return [
+    tile("Total return", sign(r.profit_total_pct, fmtPct(r.profit_total_pct)),
+         `${fmtNum(r.profit_total_abs)} ${esc(cur)}`),
+    tile("Final balance", fmtNum(r.final_balance, 2), `from ${fmtNum(r.starting_balance, 0)} ${esc(cur)}`),
+    tile("CAGR", r.cagr == null ? "—" : fmtPct(r.cagr * 100), "annualised"),
+    tile("Max drawdown", dd == null ? "—" : `${fmtNum(dd, 1)}%`,
+         r.max_drawdown_abs != null ? `${fmtNum(r.max_drawdown_abs)} ${esc(cur)}` : "", "neg"),
+    tile("Sharpe", fmtNum(r.sharpe), "return per unit of risk"),
+    tile("Sortino", fmtNum(r.sortino), "downside risk only"),
+    tile("Calmar", fmtNum(r.calmar), "return ÷ drawdown"),
+    tile("Profit factor", fmtNum(r.profit_factor), "gross win ÷ gross loss"),
+    tile("Expectancy", fmtNum(r.expectancy), `per trade, ${esc(cur)}`),
+    tile("Win rate", fmtPct((r.win_rate || 0) * 100, 1), `${r.wins}W / ${r.losses}L / ${r.draws || 0}D`),
+    tile("Trades", r.total_trades, `${fmtNum(r.trades_per_day, 2)} per day`),
+    tile("Avg hold", r.avg_trade_duration_min == null ? "—"
+         : `${fmtNum(r.avg_trade_duration_min / 60, 1)}h`, "per trade"),
+    tile("Best pair", esc(r.best_pair || "—"), "&nbsp;"),
+    tile("Worst pair", esc(r.worst_pair || "—"), "&nbsp;"),
+  ].join("");
+}
+
+async function loadRunDetail(runId, run) {
+  $("bt-metrics").innerHTML = metricGrid(run);
+
+  const cover = run.coverage_pct;
+  $("bt-coverage").innerHTML = (cover != null && cover < 95)
+    ? `<div class="check ${cover < 50 ? "failed" : "warning"}">
+         <div class="t">Window actually tested
+           <span class="pill ${cover < 50 ? "bad" : "warn"}">${fmtNum(cover, 0)}% of request</span></div>
+         <div class="m">${esc(run.coverage_note || "")}</div></div>`
+    : "";
+
+  // Equity and drawdown are two charts, not one with two axes. Different units
+  // and different scales; overlaying them would make both harder to read and
+  // invite reading a crossing point as meaning something.
+  try {
+    const { equity } = await api(`/api/backtests/${runId}/equity`);
+    if (equity.length > 1) {
+      const bal = equity.map(p => ({ x: p.at, y: Number(p.balance) }));
+      const dd = equity.map(p => ({ x: p.at, y: -Math.abs(Number(p.drawdown_pct) || 0) }));
+      $("bt-equity").innerHTML = lineChart(bal, {
+        id: "eq-chart", fill: true, format: v => fmtNum(v, 0),
+      });
+      $("bt-drawdown").innerHTML = lineChart(dd, {
+        id: "dd-chart", fill: true, colour: "var(--neg)", format: v => `${fmtNum(v, 0)}%`,
+      });
+      attachCrosshair("eq-chart", bal, p =>
+        `<b>${fmtNum(p.y, 2)}</b> ${esc(run.stake_currency || "")}<br>
+         <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+      attachCrosshair("dd-chart", dd, p =>
+        `<b>${fmtNum(p.y, 2)}%</b> below peak<br>
+         <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+    } else {
+      $("bt-equity").innerHTML = '<div class="empty">No equity curve stored for this run</div>';
+      $("bt-drawdown").innerHTML = "";
+    }
+  } catch (e) {
+    $("bt-equity").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+
+  // Per-pair, sorted by contribution.
+  try {
+    const detail = await api(`/api/backtests/${runId}`);
+    const pairs = detail.pairs || [];
+    const worst = Math.max(...pairs.map(p => Math.abs(Number(p.profit_abs) || 0)), 1);
+    $("bt-pairs").innerHTML = pairs.length ? pairs.map(p => {
+      const v = Number(p.profit_abs) || 0;
+      return `<tr>
+        <td><strong>${esc(p.pair)}</strong></td>
+        <td class="r num">${p.trades ?? "—"}</td>
+        <td class="r num">${p.wins ?? 0}/${p.losses ?? 0}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${p.profit_pct == null ? "—" : signed(p.profit_pct, fmtPct(p.profit_pct))}</td>
+        <td style="width:34%"><div class="bar"><i style="width:${(Math.abs(v) / worst * 100).toFixed(1)}%;
+          background:var(--${v >= 0 ? "pos" : "neg"})"></i></div></td></tr>`;
+    }).join("") : '<tr><td colspan="6" class="empty">No per-pair rows</td></tr>';
+  } catch { /* the summary above still stands */ }
+
+  // Trades: the distribution, the exit reasons, and the last hundred.
+  try {
+    const { trades } = await api(`/api/backtests/${runId}/trades?limit=2000`);
+    const profits = trades.map(t => Number(t.profit_abs) || 0);
+    $("bt-dist").innerHTML = histogram(profits);
+
+    const reasons = {};
+    for (const t of trades) {
+      const key = t.exit_reason || "unknown";
+      const r = reasons[key] || (reasons[key] = { n: 0, profit: 0, wins: 0 });
+      r.n++; r.profit += Number(t.profit_abs) || 0;
+      if ((Number(t.profit_abs) || 0) > 0) r.wins++;
+    }
+    const list = Object.entries(reasons).sort((a, b) => b[1].n - a[1].n);
+    $("bt-reasons").innerHTML = rankList(list, {
+      label: ([k, v]) => `${k}  ·  ${v.n} trade${v.n === 1 ? "" : "s"}`,
+      value: ([, v]) => `${v.profit >= 0 ? "+" : ""}${fmtNum(v.profit)} · ${Math.round(v.wins / v.n * 100)}% won`,
+      weight: ([, v]) => v.profit,
+    });
+
+    const recent = trades.slice(-120).reverse();
+    $("bt-trades").innerHTML = recent.length ? recent.map(t => {
+      const v = Number(t.profit_abs) || 0;
+      return `<tr>
+        <td><strong>${esc(t.pair)}</strong></td>
+        <td class="muted">${shortDate(t.open_date)}</td>
+        <td class="muted">${shortDate(t.close_date)}</td>
+        <td class="r num muted">${t.trade_duration_min == null ? "—" : fmtNum(t.trade_duration_min / 60, 1) + "h"}</td>
+        <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+        <td class="r num">${fmtNum(t.close_rate, 6)}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${t.profit_ratio == null ? "—" : signed(t.profit_ratio, fmtPct(t.profit_ratio * 100))}</td>
+        <td class="muted">${esc(t.exit_reason || "—")}</td></tr>`;
+    }).join("") : '<tr><td colspan="9" class="empty">No trades</td></tr>';
+    $("bt-trades-note").textContent =
+      trades.length > 120 ? `Showing the most recent 120 of ${trades.length}.` : "";
+  } catch (e) {
+    $("bt-dist").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
 

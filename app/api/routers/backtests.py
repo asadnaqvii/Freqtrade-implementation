@@ -104,7 +104,8 @@ async def list_jobs(db: UserDB, limit: int = 50) -> dict:
         "jobs": db.select(
             "backtest_jobs",
             columns="id,status,exchange,timeframe,pairs,timerange,builtin_strategy,"
-                    "strategy_version_id,progress,error,attempts,created_at,started_at,finished_at",
+                    "strategy_version_id,progress,progress_pct,stage,error,attempts,"
+                    "created_at,started_at,finished_at",
             order="created_at.desc",
             limit=min(limit, 200),
         )

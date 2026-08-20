@@ -440,3 +440,66 @@ def test_an_unreadable_permission_list_never_clears_the_withdrawal_check():
     assert perm.status != C.PASSED
     assert perm.severity == C.WARN_SEV, "an unrun security check must not look like info"
     assert "withdraw" in (perm.remediation or "")
+
+
+# ---------------------------------------------------------------------------
+# How far back a venue's candles go
+# ---------------------------------------------------------------------------
+
+class CandleExchange:
+    """A venue whose history starts on a given day.
+
+    `answers_since_zero` distinguishes the two behaviours that matter: some
+    venues answer an ancient `since` with their oldest candle, others answer
+    with nothing at all -- which looks exactly like "no such pair" unless you
+    go looking for the boundary.
+    """
+
+    def __init__(self, starts, *, answers_since_zero=True, symbols=("BTC/USDT",)):
+        self.starts_ms = int(starts.timestamp() * 1000)
+        self.answers_since_zero = answers_since_zero
+        self.markets = {s: {} for s in symbols}
+        self.calls = 0
+
+    def load_markets(self):
+        return self.markets
+
+    def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+        self.calls += 1
+        if symbol not in self.markets:
+            raise ValueError("no market")
+        if since is not None and since < self.starts_ms:
+            if not self.answers_since_zero:
+                return []
+            return [[self.starts_ms, 1, 2, 0.5, 1.5, 100]]
+        return [[max(since or self.starts_ms, self.starts_ms), 1, 2, 0.5, 1.5, 100]]
+
+    def close(self):
+        pass
+
+
+def _provider_with(exchange):
+    provider = CcxtProvider("kucoin", Credentials())
+    provider._exchange = exchange
+    return provider
+
+
+def test_earliest_candle_when_the_venue_answers_an_ancient_since():
+    start = datetime(2017, 9, 15, tzinfo=timezone.utc)
+    found = _provider_with(CandleExchange(start)).earliest_candle("BTC/USDT")
+    assert found.date() == start.date()
+
+
+def test_earliest_candle_is_found_by_search_when_the_venue_returns_nothing():
+    # The case that silently produced no answer before.
+    start = datetime(2021, 2, 4, tzinfo=timezone.utc)
+    exchange = CandleExchange(start, answers_since_zero=False)
+    found = _provider_with(exchange).earliest_candle("BTC/USDT")
+    assert abs((found - start).total_seconds()) <= 86400
+    assert exchange.calls < 40, "the search should converge, not sweep"
+
+
+def test_a_pair_the_venue_does_not_list_is_refused_clearly():
+    exchange = CandleExchange(datetime(2020, 1, 1, tzinfo=timezone.utc))
+    with pytest.raises(ProviderError, match="does not list"):
+        _provider_with(exchange).earliest_candle("NOPE/USDT")

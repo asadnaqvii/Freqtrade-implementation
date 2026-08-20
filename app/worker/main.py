@@ -74,15 +74,51 @@ class Heartbeat:
                 log.warning("heartbeat failed: %s", exc)
 
 
+#: Where each stage sits on the 0-100 bar. Assigned, not measured: freqtrade
+#: reports no completion figure, and inventing a smooth one would be a lie that
+#: looks like information. The two long stages own most of the range because
+#: they own most of the wall clock -- a bar that sits at 40% for four minutes
+#: and then sprints is telling the truth about where the time goes.
+STAGE_PROGRESS: dict[str, tuple[int, str]] = {
+    "claimed":          (3,   "Claimed by a worker"),
+    "strategy":         (8,   "Preparing the strategy"),
+    "download_history": (15,  "Downloading history"),
+    "download_recent":  (45,  "Downloading recent candles"),
+    "backtesting":      (60,  "Running the backtest"),
+    "parsing":          (88,  "Reading the results"),
+    "storing":          (94,  "Saving trades and equity curve"),
+    "done":             (100, "Finished"),
+}
+
+#: Substrings the runner emits, mapped to a stage. Kept here rather than passing
+#: stage keys through the runner so the runner stays a plain subprocess driver.
+_STAGE_HINTS = (
+    ("extending history backwards", "download_history"),
+    ("fetching recent candles", "download_recent"),
+    ("downloading", "download_recent"),
+    ("running freqtrade backtesting", "backtesting"),
+    ("parsing", "parsing"),
+)
+
+
+def _stage_for(message: str) -> str | None:
+    lowered = message.lower()
+    for needle, stage in _STAGE_HINTS:
+        if needle in lowered:
+            return stage
+    return None
+
+
 def _progress(client: SupabaseClient, job_id: str):
-    def report(message: str) -> None:
+    def report(message: str, *, stage: str | None = None) -> None:
         log.info("job %s: %s", job_id, message)
+        stage = stage or _stage_for(message)
+        values: dict[str, Any] = {"progress": message[:500], "heartbeat_at": _now()}
+        if stage and stage in STAGE_PROGRESS:
+            values["stage"] = stage
+            values["progress_pct"] = STAGE_PROGRESS[stage][0]
         try:
-            client.update(
-                "backtest_jobs",
-                {"progress": message[:500], "heartbeat_at": _now()},
-                filters={"id": f"eq.{job_id}"},
-            )
+            client.update("backtest_jobs", values, filters={"id": f"eq.{job_id}"})
         except Exception as exc:
             log.warning("could not record progress: %s", exc)
 
@@ -192,6 +228,7 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
     report = _progress(client, job_id)
 
     try:
+        report("Preparing the strategy", stage="strategy")
         class_name, source, builtin_dir = resolve_strategy(client, job)
         request = BacktestRequest.from_job(
             job, strategy_source=source, strategy_name=class_name, strategy_path=builtin_dir
@@ -205,6 +242,7 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
                 timeout_seconds=settings.worker.job_timeout_seconds,
                 progress=report,
             )
+            report("Saving trades and equity curve", stage="storing")
             run_id = store_results(client, job, artifacts)
 
         client.update(
@@ -213,6 +251,8 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
                 "status": "completed",
                 "finished_at": _now(),
                 "progress": f"completed; run {run_id}",
+                "stage": "done",
+                "progress_pct": 100,
                 "error": None,
             },
             filters={"id": f"eq.{job_id}"},

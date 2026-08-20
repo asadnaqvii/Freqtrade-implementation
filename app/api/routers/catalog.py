@@ -62,7 +62,13 @@ async def history(
             try:
                 earliest = provider.earliest_candle(pair, timeframe)
             except ProviderError as exc:
-                out.append({"pair": pair, "error": str(exc)})
+                # Include the type: an empty str(exc) told us nothing last time.
+                detail = str(exc).strip() or exc.__class__.__name__
+                out.append({"pair": pair, "error": detail})
+                continue
+            except Exception as exc:  # noqa: BLE001 - one bad pair must not sink the rest
+                out.append({"pair": pair,
+                            "error": f"{exc.__class__.__name__}: {str(exc)[:160]}"})
                 continue
             out.append({
                 "pair": pair,
