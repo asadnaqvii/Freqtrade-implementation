@@ -345,12 +345,6 @@
       <div class="actions"><button class="btn primary" id="bt-run">Queue backtest</button>
         <button class="btn" id="bt-refresh">Refresh</button></div>
     </div>
-    <div class="card">
-      <h2>Queue</h2>
-      <div class="scroll"><table><thead><tr>
-        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
-      </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
-    </div>
     <div class="card" id="bt-detail" hidden>
       <h2>Result detail</h2>
       <p class="hint" id="bt-detail-title"></p>
@@ -426,13 +420,18 @@
         <tr><td colspan="9" class="empty">&mdash;</td></tr>
       </tbody></table></div>
     </div>
-
     <div class="card">
       <h2>Results</h2>
       <div class="scroll"><table><thead><tr>
         <th>Strategy</th><th>Window</th><th>Trades</th><th>Win rate</th><th>Profit</th>
         <th>Drawdown</th><th>Sharpe</th><th>Best</th><th>Worst</th>
       </tr></thead><tbody id="run-rows"><tr><td colspan="9" class="empty">No results yet</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Queue</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
+      </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
     </div>
   </section>
 
@@ -811,17 +810,29 @@ $("bt-run").onclick = async () => {
 };
 $("bt-refresh").onclick = () => { loadJobs(); loadRuns(); };
 
+// Runs indexed by the job that produced them, so a finished queue row can open
+// its own result. Filled by loadRuns, which the same refresh always runs.
+let runsByJob = new Map();
+
 async function loadJobs() {
   const { jobs } = await api("/api/backtests/jobs");
   const cls = { completed: "ok", failed: "bad", running: "info", queued: "neutral", cancelled: "neutral" };
-  $("job-rows").innerHTML = jobs.length ? jobs.map(j => `<tr>
+  $("job-rows").innerHTML = jobs.length ? jobs.map(j => {
+    const run = runsByJob.get(j.id);
+    return `<tr ${run ? `data-jobrun="${esc(run.id)}" style="cursor:pointer" title="Open this result"` : ""}>
       <td><span class="pill ${cls[j.status] || "neutral"}">${esc(j.status)}</span></td>
       <td>${esc(j.builtin_strategy || "builder")}</td>
       <td class="muted">${esc((j.pairs || []).join(", ").slice(0, 40))}</td>
       <td class="muted">${esc(j.timerange || "all")}</td>
       <td>${jobProgress(j)}</td>
-      <td class="muted">${shortDate(j.created_at)}</td></tr>`).join("")
+      <td class="muted">${shortDate(j.created_at)}</td></tr>`;
+  }).join("")
     : '<tr><td colspan="6" class="empty">No jobs</td></tr>';
+
+  document.querySelectorAll("[data-jobrun]").forEach(row => row.onclick = () => {
+    const r = [...runsByJob.values()].find(x => x.id === row.dataset.jobrun);
+    if (r) openRun(r.id, runTitle(r), r);
+  });
 
   // A running job's bar moves on its own. Only while the tab is visible: a
   // backgrounded browser polling every five seconds forever is rude to both
@@ -829,7 +840,10 @@ async function loadJobs() {
   const busy = jobs.some(j => j.status === "running" || j.status === "queued");
   clearTimeout(loadJobs._t);
   if (busy && document.visibilityState === "visible") {
-    loadJobs._t = setTimeout(() => loadJobs().catch(() => {}), 5000);
+    loadJobs._t = setTimeout(
+      () => loadRuns().catch(() => {}).then(() => loadJobs()).catch(() => {}),
+      5000,
+    );
   }
 }
 
@@ -868,8 +882,14 @@ function jobProgress(j) {
   </div>`;
 }
 
+function runTitle(r) {
+  return `${r.strategy_name} · ${(r.pairs || []).join(", ")} · ${r.timeframe} · ` +
+         `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`;
+}
+
 async function loadRuns() {
   const { runs } = await api("/api/backtests");
+  runsByJob = new Map(runs.filter(r => r.job_id).map(r => [r.job_id, r]));
   $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr data-run="${esc(r.id)}" style="cursor:pointer">
       <td><strong>${esc(r.strategy_name)}</strong></td>
       <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}
@@ -887,9 +907,7 @@ async function loadRuns() {
 
   document.querySelectorAll("[data-run]").forEach(row => row.onclick = () => {
     const r = runs.find(x => x.id === row.dataset.run);
-    openRun(row.dataset.run,
-            `${r.strategy_name} · ${(r.pairs || []).join(", ")} · ${r.timeframe} · ` +
-            `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`, r);
+    openRun(row.dataset.run, runTitle(r), r);
   });
 }
 
@@ -1727,8 +1745,8 @@ async function loadRunDetail(runId, run) {
 }
 
 async function refreshAll() {
-  for (const [name, fn] of Object.entries({ strategies: loadStrategies, jobs: loadJobs,
-                                            runs: loadRuns, wallets: loadWallets,
+  for (const [name, fn] of Object.entries({ strategies: loadStrategies, runs: loadRuns,
+                                            jobs: loadJobs, wallets: loadWallets,
                                             bots: loadBots, live: loadLive })) {
     try { await fn(); } catch (e) { console.warn(name, e); }
   }
