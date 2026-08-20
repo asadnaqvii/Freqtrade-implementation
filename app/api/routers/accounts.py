@@ -127,6 +127,53 @@ async def validations(account_id: str, db: UserDB, limit: int = 20) -> dict:
     return {"runs": runs}
 
 
+@router.get("/{account_id}/reconciliation")
+async def reconciliation(account_id: str, db: UserDB, limit: int = 200) -> dict:
+    """What the venue says about the trades this bot thinks it made.
+
+    Read from the database rather than computed here: it needs the exchange key,
+    so the bot does it and the app reports what it found. Includes when, so a
+    clean result cannot be mistaken for a fresh one.
+    """
+    account = db.select_one("exchange_accounts", columns="id,label",
+                            filters={"id": f"eq.{account_id}"})
+    if not account:
+        raise HTTPException(status_code=404, detail="no such account")
+
+    runs = db.select(
+        "validation_runs",
+        columns="id,status,summary,created_at,checks_total,checks_passed,"
+                "checks_warning,checks_failed,duration_ms",
+        filters={"account_id": f"eq.{account_id}", "kind": "eq.reconciliation"},
+        order="created_at.desc",
+        limit=1,
+    )
+    if not runs:
+        return {
+            "run": None, "checks": [], "orders": [],
+            "note": ("No reconciliation has run yet. The bot compares its orders "
+                     "against the exchange about once an hour, once it has orders "
+                     "to compare."),
+        }
+
+    run = runs[0]
+    return {
+        "run": run,
+        "checks": db.select(
+            "validation_checks",
+            columns="code,title,status,severity,message,remediation,pair,actual",
+            filters={"run_id": f"eq.{run['id']}"},
+            order="id.asc",
+        ),
+        "orders": db.select(
+            "order_reconciliations",
+            filters={"run_id": f"eq.{run['id']}"},
+            order="pair.asc",
+            limit=min(limit, 1000),
+        ),
+    }
+
+
 @router.get("/validations/{run_id}")
 async def validation_detail(run_id: str, db: UserDB) -> dict:
     run = db.select_one("validation_runs", filters={"id": f"eq.{run_id}"})

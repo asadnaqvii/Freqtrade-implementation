@@ -265,3 +265,75 @@ def test_a_bot_belonging_to_another_account_is_not_borrowed():
         ("exchange", [{"id": "bot-1", "api_base_url": "x", "account_id": "other"}]),
     ])
     assert engine.bot_for_account(db, {"id": "a", "provider": "kucoin"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation: past trades against the venue's record
+# ---------------------------------------------------------------------------
+
+def test_reconciliation_declines_without_keys(monkeypatch):
+    from app.validation import selfcheck
+
+    monkeypatch.delenv("FREQTRADE__EXCHANGE__KEY", raising=False)
+    monkeypatch.delenv("FREQTRADE__EXCHANGE__SECRET", raising=False)
+    assert selfcheck.reconcile(
+        None, account={"provider": "kucoin"}, bot_instance_id=None, owner_id=None
+    ) is None
+
+
+def test_reconciliation_does_nothing_before_there_are_orders(monkeypatch):
+    from app.validation import selfcheck
+
+    monkeypatch.setenv("FREQTRADE__EXCHANGE__KEY", "k")
+    monkeypatch.setenv("FREQTRADE__EXCHANGE__SECRET", "s")
+
+    class Empty:
+        def select(self, *a, **k):
+            return []
+
+    assert selfcheck.reconcile(
+        Empty(), account={"provider": "kucoin"}, bot_instance_id=None, owner_id=None
+    ) is None
+
+
+def test_a_missing_order_view_is_not_a_failure(monkeypatch):
+    # v_live_orders only exists once freqtrade has created its tables.
+    from app.validation import selfcheck
+
+    monkeypatch.setenv("FREQTRADE__EXCHANGE__KEY", "k")
+    monkeypatch.setenv("FREQTRADE__EXCHANGE__SECRET", "s")
+
+    class NoView:
+        def select(self, *a, **k):
+            raise RuntimeError('relation "v_live_orders" does not exist')
+
+    assert selfcheck.reconcile(
+        NoView(), account={"provider": "kucoin"}, bot_instance_id=None, owner_id=None
+    ) is None
+
+
+def test_an_order_the_bot_never_placed_is_the_serious_finding():
+    """Someone or something else trading the account is the case that matters.
+
+    A partial fill is an accounting error; an order the bot did not place means
+    the key is in use somewhere it should not be.
+    """
+    from app.validation.reconcile import Discrepancy
+
+    finding = Discrepancy(pair="BTC/USDT", kind="missing_in_bot",
+                          ft_order_id=None, exchange_order_id="abc",
+                          detail="the venue has an order this bot never recorded")
+    row = finding.as_row("run-1", "bot-1", "acct-1")
+    assert row["matched"] is False
+    assert row["discrepancy_kind"] == "missing_in_bot"
+    assert row["exchange_order_id"] == "abc"
+    assert row["notes"]
+
+
+def test_a_matching_order_stores_no_discrepancy_kind():
+    from app.validation.reconcile import Discrepancy
+
+    row = Discrepancy(pair="BTC/USDT", kind="matched", ft_order_id=1,
+                      exchange_order_id="abc", detail="agrees").as_row("r", "b", "a")
+    assert row["matched"] is True
+    assert row["discrepancy_kind"] is None

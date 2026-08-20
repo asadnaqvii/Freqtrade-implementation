@@ -373,6 +373,10 @@ else:
 #: app's view is never far behind, rare enough to be invisible to rate limits.
 SELFCHECK_INTERVAL_SECONDS = int(_env("SELFCHECK_INTERVAL_SECONDS", "900") or 900)
 
+#: Reconcile every fourth self-check -- hourly at the default interval. It costs
+#: a request per traded pair, and orders do not change faster than that.
+RECONCILE_EVERY_N_CHECKS = 4
+
 
 def _sole_profile_id(client):
     """The owner, when there is exactly one and PLATFORM_OWNER_ID was not set.
@@ -434,6 +438,7 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
     """
     from app.validation import selfcheck
 
+    nonlocal_state = {"ticks": 0}
     while True:
         try:
             outcome = selfcheck.run(
@@ -447,6 +452,18 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
             )
             if outcome:
                 print(f"self-check: {outcome.status} -- {outcome.summary}", flush=True)
+
+            # Reconciliation asks the venue what it actually did with the orders
+            # this bot recorded. Hourly rather than every cycle: it is a request
+            # per traded pair, and the answer moves at the speed of trading.
+            nonlocal_state["ticks"] += 1
+            if nonlocal_state["ticks"] % RECONCILE_EVERY_N_CHECKS == 1:
+                matched = selfcheck.reconcile(
+                    client, account=account, bot_instance_id=bot_id, owner_id=owner_id,
+                )
+                if matched:
+                    print(f"reconciliation: {matched.status} -- {matched.summary}",
+                          flush=True)
         except Exception as exc:
             # Never let this stop the bot trading; a missing result reads as
             # "not measured", which is true.

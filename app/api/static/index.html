@@ -569,6 +569,19 @@
       <div id="verify-summary"></div>
       <div id="verify-checks"></div>
     </div>
+
+    <div class="card" id="recon-card">
+      <h2>Past trades, checked against the exchange</h2>
+      <p class="hint">Every order this bot recorded, compared with what the venue says
+        actually happened. This is the question a balance check does not ask: partial
+        fills booked as complete, orders lost after a crash, and anything traded on the
+        account that this bot did not place.</p>
+      <div id="recon-summary"><div class="empty">&mdash;</div></div>
+      <div id="recon-checks"></div>
+      <div class="scroll" id="recon-table" hidden><table><thead><tr>
+        <th>Pair</th><th>Finding</th><th>Bot order</th><th>Exchange order</th><th>Detail</th>
+      </tr></thead><tbody id="recon-rows"></tbody></table></div>
+    </div>
   </section>
 
   <!-- ── Live bot ──────────────────────────────────────────── -->
@@ -1173,6 +1186,62 @@ $("w-add").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
+async function loadReconciliation(accountId) {
+  if (!accountId) return;
+  try {
+    const r = await api(`/api/accounts/${accountId}/reconciliation`);
+    if (!r.run) {
+      $("recon-summary").innerHTML = `<div class="empty">${esc(r.note || "Nothing yet")}</div>`;
+      $("recon-checks").innerHTML = "";
+      $("recon-table").hidden = true;
+      return;
+    }
+    const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad", skipped: "neutral" };
+    // The stored row spells this as matched / discrepancy_kind / notes, not the
+    // in-memory Discrepancy's kind / detail.
+    const agreed = (r.orders || []).filter(o => o.matched).length;
+    const disagreed = (r.orders || []).filter(
+      o => !o.matched && o.discrepancy_kind && o.discrepancy_kind !== "unavailable").length;
+    $("recon-summary").innerHTML = `
+      <div class="kpis" style="margin:0 0 14px">
+        <div class="kpi"><div class="k">Verdict</div>
+          <div class="v"><span class="pill ${cls[r.run.status] || "neutral"}"
+            style="font-size:13px">${esc(r.run.status)}</span></div>
+          <div class="s">${esc(shortDate(r.run.created_at))}</div></div>
+        <div class="kpi"><div class="k">Orders agreed</div>
+          <div class="v pos">${agreed}</div><div class="s">bot and venue match</div></div>
+        <div class="kpi"><div class="k">Disagreed</div>
+          <div class="v ${disagreed ? "neg" : ""}">${disagreed}</div>
+          <div class="s">need a look</div></div>
+      </div>
+      <p class="hint">${esc(r.run.summary || "")}</p>`;
+
+    $("recon-checks").innerHTML = (r.checks || []).map(c => `
+      <div class="check ${esc(c.status)}">
+        <div class="t">${esc(c.title)} <span class="pill ${cls[c.status] || "neutral"}">${esc(c.status)}</span></div>
+        <div class="m">${esc(c.message || "")}</div>
+        ${c.remediation ? `<div class="r"><strong>What to do:</strong> ${esc(c.remediation)}</div>` : ""}
+      </div>`).join("");
+
+    // Only the disagreements are worth a row each; a matching order is the
+    // expected case and thousands of them would bury the handful that are not.
+    const notable = (r.orders || []).filter(o => !o.matched);
+    $("recon-table").hidden = !notable.length;
+    $("recon-rows").innerHTML = notable.map(o => {
+      const kind = o.discrepancy_kind || "unknown";
+      return `<tr>
+      <td><strong>${esc(o.pair || "—")}</strong></td>
+      <td><span class="pill ${kind === "unavailable" ? "neutral" : "bad"}">${esc(kind.replace(/_/g, " "))}</span>
+        ${o.discrepancy_pct != null ? `<span class="muted num"> ${fmtNum(o.discrepancy_pct, 2)}%</span>` : ""}</td>
+      <td class="muted mono">${esc(o.ft_order_id ?? "—")}</td>
+      <td class="muted mono">${esc(o.exchange_order_id ?? "—")}</td>
+      <td class="muted">${esc(o.notes || "")}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("recon-summary").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
 async function loadWallets() {
   const { accounts } = await api("/api/accounts");
   const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad" };
@@ -1188,6 +1257,8 @@ async function loadWallets() {
       </div>
       ${a.verification_notes ? `<div class="muted" style="margin-top:7px;font-size:12px">${esc(a.verification_notes)}</div>` : ""}
     </div>`).join("") : '<div class="empty">None connected</div>';
+
+  if (accounts.length) loadReconciliation(accounts[0].id).catch(() => {});
 
   document.querySelectorAll("[data-verify]").forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = "Checking…";
