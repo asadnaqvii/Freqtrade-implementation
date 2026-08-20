@@ -245,22 +245,72 @@ async def get_verdict(run_id: str, db: UserDB) -> dict:
     return verdict.assess(run, _all_trades(db, run_id)).as_dict()
 
 
-@router.delete("/jobs/{job_id}", status_code=204)
-async def cancel_job(job_id: str, db: UserDB) -> None:
+@router.post("/jobs/{job_id}/cancel", status_code=200)
+async def cancel_job(job_id: str, db: UserDB) -> dict:
+    """Stop a job, whether it is waiting or already running.
+
+    A running job used to be un-cancellable, on the grounds that nothing could
+    reach the freqtrade process. Now the worker watches this status on its
+    heartbeat and terminates the subprocess when it flips, so the honest answer
+    changed.
+    """
     job = db.select_one("backtest_jobs", columns="id,status", filters={"id": f"eq.{job_id}"})
     if not job:
         raise HTTPException(status_code=404, detail="no such job")
     if job["status"] in ("completed", "failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"job is already {job['status']}")
-    if job["status"] == "running":
-        # Nothing here can stop a freqtrade process that has already started, and
-        # marking the row cancelled while the worker keeps going would leave the
-        # status lying. Say so rather than pretending.
+
+    db.update("backtest_jobs", {"status": "cancelled"}, filters={"id": f"eq.{job_id}"})
+    return {
+        "status": "cancelled",
+        # Queued work stops immediately; a running one stops when the worker
+        # next checks in, which is worth saying so nobody watches a live row for
+        # a few seconds wondering whether the click registered.
+        "detail": ("Stopped." if job["status"] == "queued"
+                   else "Stopping — the worker checks in every few seconds."),
+    }
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+async def delete_job(job_id: str, db: UserDB) -> None:
+    """Remove a finished job row. Cancel it first if it is still active."""
+    job = db.select_one("backtest_jobs", columns="id,status", filters={"id": f"eq.{job_id}"})
+    if not job:
+        raise HTTPException(status_code=404, detail="no such job")
+    if job["status"] in ("queued", "running"):
         raise HTTPException(
             status_code=409,
-            detail=(
-                "this backtest is already running and cannot be stopped part-way. "
-                "It will finish on its own; its results still land normally."
-            ),
+            detail="this job is still active. Cancel it first, then delete it.",
         )
-    db.update("backtest_jobs", {"status": "cancelled"}, filters={"id": f"eq.{job_id}"})
+    db.delete("backtest_jobs", filters={"id": f"eq.{job_id}"})
+
+
+@router.delete("/failed", status_code=200)
+async def delete_failed(db: UserDB) -> dict:
+    """Clear out failed and cancelled jobs in one go.
+
+    Exploratory work leaves a trail of them, and deleting one at a time is a
+    chore that means the trail just stays there instead.
+    """
+    removed = db.delete("backtest_jobs", filters={"status": "in.(failed,cancelled)"})
+    return {"deleted": len(removed)}
+
+
+@router.delete("/{run_id}", status_code=204)
+async def delete_run(run_id: str, db: UserDB) -> None:
+    """Delete a result and everything under it.
+
+    The trades, per-pair rows and equity curve go with it on the database's own
+    cascade. The job that produced it goes too -- keeping it would leave a row
+    in the queue pointing at a result that no longer exists.
+    """
+    run = db.select_one("backtest_runs", columns="id,job_id", filters={"id": f"eq.{run_id}"})
+    if not run:
+        raise HTTPException(status_code=404, detail="no such backtest run")
+
+    db.delete("backtest_runs", filters={"id": f"eq.{run_id}"})
+    if run.get("job_id"):
+        try:
+            db.delete("backtest_jobs", filters={"id": f"eq.{run['job_id']}"})
+        except Exception as exc:  # noqa: BLE001 - the run is already gone
+            log.info("run %s deleted; its job row remains: %s", run_id, exc)

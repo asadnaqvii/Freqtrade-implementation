@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from app.backtest import periods
-from app.backtest.runner import BacktestError, BacktestRequest, run_backtest
+from app.backtest.runner import (
+    BacktestError, BacktestRequest, Cancelled, run_backtest,
+)
 from app.core.config import get_settings
 from app.core.supabase import SupabaseClient, SupabaseError
 
@@ -55,6 +57,7 @@ class Heartbeat:
         self._job_id = job_id
         self._interval = interval
         self._stop = threading.Event()
+        self._cancelled = threading.Event()
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> "Heartbeat":
@@ -67,16 +70,30 @@ class Heartbeat:
         if self._thread:
             self._thread.join(timeout=5)
 
+    @property
+    def cancelled(self) -> bool:
+        """Whether someone marked this job cancelled while it was running."""
+        return self._cancelled.is_set()
+
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
             try:
-                self._client.update(
+                rows = self._client.update(
                     "backtest_jobs",
                     {"heartbeat_at": _now()},
                     filters={"id": f"eq.{self._job_id}"},
                 )
             except Exception as exc:  # never let a heartbeat kill the run
                 log.warning("heartbeat failed: %s", exc)
+                continue
+
+            # The heartbeat already round-trips to this row every few seconds,
+            # so it is also where a cancellation shows up soonest -- no second
+            # poller, no extra request.
+            status = (rows[0] if rows else {}).get("status")
+            if status == "cancelled" and not self._cancelled.is_set():
+                log.info("job %s was cancelled; stopping", self._job_id)
+                self._cancelled.set()
 
 
 #: Where each stage sits on the 0-100 bar. Assigned, not measured: freqtrade
@@ -239,13 +256,14 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
             job, strategy_source=source, strategy_name=class_name, strategy_path=builtin_dir
         )
 
-        with Heartbeat(client, job_id, settings.worker.heartbeat_seconds):
+        with Heartbeat(client, job_id, settings.worker.heartbeat_seconds) as beat:
             artifacts = run_backtest(
                 request,
                 data_dir=settings.worker.data_dir,
                 user_dir=settings.worker.user_dir,
                 timeout_seconds=settings.worker.job_timeout_seconds,
                 progress=report,
+                should_stop=lambda: beat.cancelled,
             )
             report("Saving trades and equity curve", stage="storing")
             run_id = store_results(client, job, artifacts)
@@ -263,6 +281,18 @@ def process(client: SupabaseClient, job: dict[str, Any]) -> None:
             filters={"id": f"eq.{job_id}"},
         )
 
+    except Cancelled:
+        # Already marked cancelled by whoever asked; just stop and say so.
+        log.info("job %s stopped on request", job_id)
+        try:
+            client.update(
+                "backtest_jobs",
+                {"status": "cancelled", "finished_at": _now(),
+                 "progress": "cancelled", "stage": "done", "progress_pct": 100},
+                filters={"id": f"eq.{job_id}"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not record the cancellation: %s", exc)
     except BacktestError as exc:
         _fail(client, job, str(exc))
     except SupabaseError as exc:

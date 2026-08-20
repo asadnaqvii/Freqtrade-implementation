@@ -459,3 +459,64 @@ def test_startup_candle_count_is_read_from_the_strategy():
     assert startup_candles("startup_candle_count = 30") == 30
     assert startup_candles(None) == DEFAULT_STARTUP_CANDLES
     assert startup_candles("no mention here") == DEFAULT_STARTUP_CANDLES
+
+
+# ---------------------------------------------------------------------------
+# Cancelling a run that has already started
+# ---------------------------------------------------------------------------
+
+def test_a_running_subprocess_is_terminated_when_cancelled():
+    """Before this, a started backtest could not be stopped at all.
+
+    Which is a poor answer for a job queued by mistake over ten years of 5m
+    candles -- the only options were wait an hour or redeploy the worker.
+    """
+    import sys
+
+    from app.backtest.runner import Cancelled, _run
+
+    stop = {"now": False}
+
+    def should_stop():
+        # Let it get going, then ask it to stop.
+        stop["now"] = True
+        return stop["now"]
+
+    with pytest.raises(Cancelled):
+        _run([sys.executable, "-c", "import time; time.sleep(60)"],
+             cwd=Path("."), timeout=120, should_stop=should_stop)
+
+
+def test_a_process_that_finishes_normally_is_unaffected():
+    import sys
+
+    from app.backtest.runner import _run
+
+    code, output = _run([sys.executable, "-c", "print('hello')"],
+                        cwd=Path("."), timeout=30, should_stop=lambda: False)
+    assert code == 0 and "hello" in output
+
+
+def test_output_is_still_captured_after_the_popen_rewrite():
+    import sys
+
+    from app.backtest.runner import _run
+
+    seen = []
+    code, output = _run(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        cwd=Path("."), timeout=30, on_output=seen.append,
+    )
+    assert code == 0
+    assert "out" in output and "err" in output, "stderr must still reach the caller"
+    assert seen and seen[0] == output
+
+
+def test_a_timeout_still_raises_rather_than_hanging():
+    import sys
+
+    from app.backtest.runner import BacktestError, _run
+
+    with pytest.raises(BacktestError, match="did not finish"):
+        _run([sys.executable, "-c", "import time; time.sleep(30)"],
+             cwd=Path("."), timeout=3)

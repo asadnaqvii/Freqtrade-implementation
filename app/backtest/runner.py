@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import sys
 import uuid
 import tempfile
@@ -194,23 +195,63 @@ def build_config(request: BacktestRequest, *, data_dir: Path, user_dir: Path) ->
     return config
 
 
-def _run(cmd: list[str], *, cwd: Path, timeout: int, on_output: Callable[[str], None] | None = None) -> tuple[int, str]:
+class Cancelled(BacktestError):
+    """The job was cancelled while it was running."""
+
+
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    on_output: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[int, str]:
+    """Run a freqtrade subprocess, stopping early if asked to.
+
+    Polled rather than blocking on wait(), because a cancel has to reach a
+    process that may be several minutes into a download. Without this the only
+    honest answer to "cancel this run" was "you cannot", which is a poor answer
+    for a job someone queued by mistake over ten years of 5m candles.
+    """
     log.info("running: %s", " ".join(cmd))
     env = dict(os.environ)
     # Keep freqtrade's own output unbuffered so progress lines arrive live.
     env["PYTHONUNBUFFERED"] = "1"
 
-    try:
-        process = subprocess.run(
-            cmd, cwd=cwd, timeout=timeout, capture_output=True, text=True, env=env, check=False
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BacktestError(
-            f"freqtrade did not finish within {timeout}s. Narrow the timerange or "
-            "reduce the number of pairs."
-        ) from exc
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen(
+        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, env=env,
+    )
 
-    output = (process.stdout or "") + (process.stderr or "")
+    def finish(reason: str) -> None:
+        process.terminate()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            # It ignored SIGTERM; stop asking.
+            process.kill()
+            process.wait(timeout=10)
+        log.info("stopped freqtrade: %s", reason)
+
+    while True:
+        try:
+            output, _ = process.communicate(timeout=2)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        if should_stop and should_stop():
+            finish("cancelled")
+            raise Cancelled("cancelled while running")
+        if time.monotonic() > deadline:
+            finish("timed out")
+            raise BacktestError(
+                f"freqtrade did not finish within {timeout}s. Narrow the timerange, "
+                "reduce the number of pairs, or use a larger timeframe."
+            )
+
+    output = output or ""
     if on_output:
         on_output(output)
     return process.returncode, output
@@ -384,6 +425,7 @@ def run_backtest(
     user_dir: str | Path,
     timeout_seconds: int = 3600,
     progress: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> BacktestArtifacts:
     """Download data if needed, run the backtest, return the parsed export."""
     request.validate()
@@ -457,7 +499,7 @@ def run_backtest(
             # why the loop below used to exit after a single fruitless pass.
             if progress:
                 progress("fetching candles")
-            code, output = _run(base_cmd + timerange_args, cwd=workdir, timeout=timeout_seconds)
+            code, output = _run(base_cmd + timerange_args, cwd=workdir, timeout=timeout_seconds, should_stop=should_stop)
             if code != 0:
                 log.warning("download-data exited %s: %s", code, output[-400:])
                 if progress:
@@ -479,7 +521,8 @@ def run_backtest(
                         progress(f"extending history backwards (pass {attempt}, "
                                  f"have from {reached})")
                     code, output = _run(base_cmd + timerange_args + ["--prepend"],
-                                        cwd=workdir, timeout=timeout_seconds)
+                                        cwd=workdir, timeout=timeout_seconds,
+                                        should_stop=should_stop)
                     if code != 0:
                         log.warning("download-data --prepend exited %s: %s",
                                     code, output[-400:])
@@ -515,7 +558,7 @@ def run_backtest(
             progress("running freqtrade backtesting")
 
         started = datetime.now(timezone.utc)
-        code, output = _run(backtest_cmd, cwd=workdir, timeout=timeout_seconds)
+        code, output = _run(backtest_cmd, cwd=workdir, timeout=timeout_seconds, should_stop=should_stop)
         duration = (datetime.now(timezone.utc) - started).total_seconds()
 
         if code != 0:

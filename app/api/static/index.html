@@ -483,17 +483,21 @@
     <div class="card">
       <h2>Results</h2>
       <div class="scroll"><table><thead><tr>
-        <th>Strategy</th><th>Window</th><th>Trades</th><th>Win rate</th><th>Profit</th>
-        <th>Drawdown</th><th>Sharpe</th><th>Best</th><th>Worst</th>
-      </tr></thead><tbody id="run-rows"><tr><td colspan="9" class="empty">No results yet</td></tr></tbody></table></div>
+        <th>Strategy</th><th>Window</th><th class="r">Trades</th><th class="r">Win rate</th>
+        <th class="r">Profit</th><th class="r">Drawdown</th><th class="r">Sharpe</th>
+        <th>Best</th><th>Worst</th><th></th>
+      </tr></thead><tbody id="run-rows"><tr><td colspan="10" class="empty">No results yet</td></tr></tbody></table></div>
     </div>
     <div class="card">
       <h2>Queue</h2>
       <p class="hint">Work still outstanding, plus anything that failed. Completed runs
         move to Results above.</p>
       <div class="scroll"><table><thead><tr>
-        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th>
-      </tr></thead><tbody id="job-rows"><tr><td colspan="6" class="empty">No jobs</td></tr></tbody></table></div>
+        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th><th></th>
+      </tr></thead><tbody id="job-rows"><tr><td colspan="7" class="empty">No jobs</td></tr></tbody></table></div>
+      <div class="actions">
+        <button class="btn" id="bt-clear-failed">Clear failed and cancelled</button>
+      </div>
     </div>
   </section>
 
@@ -987,9 +991,33 @@ async function loadJobs() {
       <td class="muted">${esc((j.pairs || []).join(", ").slice(0, 40))}</td>
       <td class="muted">${esc(j.timerange || "all")}</td>
       <td>${jobProgress(j)}</td>
-      <td class="muted">${shortDate(j.created_at)}</td></tr>`;
+      <td class="muted">${shortDate(j.created_at)}</td>
+      <td class="r">${
+        j.status === "queued" || j.status === "running"
+          ? `<button class="btn tiny danger" data-cancel="${esc(j.id)}">Stop</button>`
+          : `<button class="btn tiny" data-deljob="${esc(j.id)}">Remove</button>`
+      }</td></tr>`;
   }).join("")
-    : '<tr><td colspan="6" class="empty">Nothing queued — finished runs are in Results above</td></tr>';
+    : '<tr><td colspan="7" class="empty">Nothing queued — finished runs are in Results above</td></tr>';
+
+  // These buttons sit inside rows that are themselves clickable, so each has to
+  // keep its click to itself or removing a job would also open it.
+  document.querySelectorAll("[data-cancel]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    b.disabled = true; b.textContent = "Stopping…";
+    try {
+      const r = await api(`/api/backtests/jobs/${b.dataset.cancel}/cancel`, { method: "POST" });
+      toast(r.detail || "Cancelled");
+    } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = "Stop"; }
+    loadJobs().catch(() => {});
+  });
+  document.querySelectorAll("[data-deljob]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    b.disabled = true;
+    try { await api(`/api/backtests/jobs/${b.dataset.deljob}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, true); b.disabled = false; return; }
+    loadJobs().catch(() => {});
+  });
 
   document.querySelectorAll("[data-jobrun]").forEach(row => row.onclick = () => {
     const r = [...runsByJob.values()].find(x => x.id === row.dataset.jobrun);
@@ -1064,8 +1092,23 @@ async function loadRuns() {
       <td class="num neg">${fmtPct(r.max_drawdown_pct)}</td>
       <td class="num">${fmtNum(r.sharpe)}</td>
       <td class="muted">${esc(r.best_pair || "—")}</td>
-      <td class="muted">${esc(r.worst_pair || "—")}</td></tr>`).join("")
-    : '<tr><td colspan="9" class="empty">No results yet</td></tr>';
+      <td class="muted">${esc(r.worst_pair || "—")}</td>
+      <td class="r"><button class="btn tiny" data-delrun="${esc(r.id)}"
+          title="Delete this result and its trades">Delete</button></td></tr>`).join("")
+    : '<tr><td colspan="10" class="empty">No results yet</td></tr>';
+
+  document.querySelectorAll("[data-delrun]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    const r = runs.find(x => x.id === b.dataset.delrun);
+    if (!confirm(`Delete this ${r?.strategy_name || ""} result and its ${r?.total_trades ?? 0} trades?`
+                 + "\n\nThis cannot be undone.")) return;
+    b.disabled = true;
+    try { await api(`/api/backtests/${b.dataset.delrun}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, true); b.disabled = false; return; }
+    if (currentRun === b.dataset.delrun) $("bt-detail").hidden = true;
+    loadRuns().catch(() => {});
+    loadJobs().catch(() => {});
+  });
 
   document.querySelectorAll("[data-run]").forEach(row => row.onclick = () => {
     const r = runs.find(x => x.id === row.dataset.run);
@@ -1460,6 +1503,18 @@ function candleEstimate() {
   $(id)?.addEventListener("change", candleEstimate));
 document.querySelectorAll("#bt-presets [data-years]").forEach(b =>
   b.addEventListener("click", () => setTimeout(candleEstimate, 0)));
+
+$("bt-clear-failed").onclick = async (e) => {
+  const btn = e.currentTarget;
+  if (!confirm("Remove every failed and cancelled job from the queue?")) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/backtests/failed", { method: "DELETE" });
+    toast(r.deleted ? `Removed ${r.deleted} job(s)` : "Nothing to remove");
+  } catch (err) { toast(err.message, true); }
+  btn.disabled = false;
+  loadJobs().catch(() => {});
+};
 
 $("bt-history").onclick = async () => {
   const pairs = chosenPairs.join(",");

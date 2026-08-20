@@ -51,10 +51,12 @@ def index_of(routes, path, method="GET"):
     [
         ("/api/bots/live/trades", "/api/bots/{bot_id}/trades"),
         ("/api/backtests/jobs", "/api/backtests/{run_id}"),
+        ("/api/backtests/failed", "/api/backtests/{run_id}"),
     ],
 )
 def test_literal_routes_are_not_shadowed(routes, literal, parameterised):
-    assert index_of(routes, literal) < index_of(routes, parameterised), (
+    method = "DELETE" if literal.endswith("/failed") else "GET"
+    assert index_of(routes, literal, method) < index_of(routes, parameterised, method), (
         f"{literal} is declared after {parameterised}, so requests for it will bind "
         "the wrong path parameter instead of reaching their handler"
     )
