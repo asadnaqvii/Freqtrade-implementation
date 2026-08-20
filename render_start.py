@@ -165,33 +165,45 @@ except Exception as exc:
 _trading_lock_conn = None
 
 
-def acquire_trading_lock(url, name, wait_seconds=150):
-    """Refuse to trade while another instance of this bot is trading.
+def _lock_keys(name):
+    """Two keys per bot: the trading lock, and a flag meaning someone wants it."""
+    import hashlib
+
+    digest = hashlib.sha256(name.encode()).digest()
+    held = int.from_bytes(digest[:8], "big", signed=True)
+    wanted = int.from_bytes(digest[8:16], "big", signed=True)
+    return held, wanted
+
+
+def acquire_trading_lock(url, name, wait_seconds=300):
+    """Become the only instance that trades, taking over from a predecessor.
 
     Freqtrade assumes it is alone. It keeps open positions in memory and checks
-    "do I already hold this pair?" against that, not against the database. Two
-    processes sharing one database therefore each believe the pair is free, and
-    both open a position.
+    "do I already hold this pair?" against that, not against the database, so two
+    processes sharing one database each believe a pair is free and both enter. A
+    rolling deploy did exactly that here: two trades on the same pair in the same
+    second.
 
-    This is not hypothetical: a rolling deploy did exactly that here, opening two
-    trades on the same pair in the same second while the old and new instances
-    overlapped. In dry-run it cost nothing. On real money it is two positions
-    where the strategy intended one, at twice the intended size, and neither
-    process knows about the other's.
+    A Postgres advisory lock is the right shape -- it lives on a connection, so it
+    releases by itself however a process dies. But refusing to start without it
+    deadlocked the deploy: Render keeps the old instance running until the new one
+    is healthy, and the new one could never become healthy while the old one held
+    the lock. The service became undeployable.
 
-    A Postgres advisory lock is the right shape for this: it is held by a
-    connection, so it releases by itself when a process dies, however it dies.
-    No stale lock to clean up after a crash.
+    So there are two keys. HELD is the trading lock. WANTED is raised by a
+    newcomer before it waits, and the holder watches it: when WANTED stops being
+    free, the holder knows someone is waiting and exits, releasing HELD. Nothing
+    is stored and nothing needs cleaning up -- both keys live on connections, so a
+    crash at any point leaves no stale state.
     """
     global _trading_lock_conn
     try:
-        import hashlib
         import psycopg2
     except ImportError:
         print("psycopg2 missing; cannot take the trading lock", flush=True)
         return False
 
-    key = int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big", signed=True)
+    held_key, wanted_key = _lock_keys(name)
     raw = url.replace("postgresql+psycopg2://", "postgresql://", 1)
     try:
         conn = psycopg2.connect(raw, connect_timeout=20)
@@ -200,32 +212,80 @@ def acquire_trading_lock(url, name, wait_seconds=150):
         print(f"could not connect to take the trading lock: {exc}", flush=True)
         return False
 
-    deadline = time.time() + wait_seconds
-    announced = False
-    while True:
+    def try_lock(key):
         with conn.cursor() as cur:
             cur.execute("select pg_try_advisory_lock(%s)", (key,))
-            if cur.fetchone()[0]:
-                _trading_lock_conn = conn
-                print(f"holding the trading lock for {name}", flush=True)
-                return True
-        if not announced:
-            print(
-                f"another instance still holds the trading lock for {name}; waiting "
-                f"up to {wait_seconds}s for it to exit. This is normal during a deploy.",
-                flush=True,
-            )
-            announced = True
+            return bool(cur.fetchone()[0])
+
+    def unlock(key):
+        with conn.cursor() as cur:
+            cur.execute("select pg_advisory_unlock(%s)", (key,))
+
+    # Announce the intent first, so an incumbent sees it and stands down.
+    announced = try_lock(wanted_key)
+    if not announced:
+        print("another instance is already waiting to take over; deferring to it",
+              flush=True)
+        conn.close()
+        return False
+
+    deadline = time.time() + wait_seconds
+    said = False
+    while True:
+        if try_lock(held_key):
+            unlock(wanted_key)
+            _trading_lock_conn = conn
+            print(f"holding the trading lock for {name}", flush=True)
+            return True
+        if not said:
+            print(f"another instance holds the trading lock for {name}; it has been "
+                  "asked to stand down. Waiting for it to exit.", flush=True)
+            said = True
         if time.time() >= deadline:
             conn.close()
             print(
-                "TRADING LOCK NOT ACQUIRED: refusing to start a second trading "
-                "instance. Two freqtrade processes on one database open duplicate "
-                "positions. Stop the other instance, then redeploy.",
+                "TRADING LOCK NOT ACQUIRED: the previous instance did not stand "
+                "down. Refusing to start a second trading process -- two of them "
+                "on one database open duplicate positions.",
                 flush=True,
             )
             return False
-        time.sleep(5)
+        time.sleep(3)
+
+
+def watch_for_takeover(name, on_yield, poll_seconds=5):
+    """Stand down when a newer instance asks for the trading lock.
+
+    The incumbent has to release, or a rolling deploy can never complete: the
+    replacement is not healthy until it holds the lock, and the platform will not
+    stop the incumbent until the replacement is healthy.
+    """
+    _, wanted_key = _lock_keys(name)
+
+    def watch():
+        while True:
+            time.sleep(poll_seconds)
+            conn = _trading_lock_conn
+            if conn is None:
+                return
+            try:
+                with conn.cursor() as cur:
+                    # Free means nobody is waiting. Take and release it rather
+                    # than holding it, so the next newcomer can raise it again.
+                    cur.execute("select pg_try_advisory_lock(%s)", (wanted_key,))
+                    free = bool(cur.fetchone()[0])
+                    if free:
+                        cur.execute("select pg_advisory_unlock(%s)", (wanted_key,))
+            except Exception as exc:
+                print(f"takeover watch failed: {exc}", flush=True)
+                return
+            if not free:
+                print("a newer instance wants the trading lock; standing down",
+                      flush=True)
+                on_yield()
+                return
+
+    threading.Thread(target=watch, daemon=True, name="takeover").start()
 
 
 def verify_database(url, expected_schema):
@@ -514,6 +574,15 @@ if db_url:
 if db_url:
     if not acquire_trading_lock(db_url, bot_name):
         sys.exit(1)
+
+    def stand_down():
+        # Exit hard: freqtrade owns the main thread and there is no clean way to
+        # ask it to stop from here. The positions are in Postgres, so the
+        # replacement picks them up on its next start.
+        print("exiting so the replacement can take over", flush=True)
+        os._exit(0)
+
+    watch_for_takeover(bot_name, stand_down)
 
 print(f"starting freqtrade on port {port}", flush=True)
 sys.stdout.flush()
