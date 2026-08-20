@@ -1827,8 +1827,10 @@ async function loadPerformance(stake = "") {
 // one says what it will do before it does it.
 const CTL_CONFIRM = {
   stop: "Stop the bot entirely?\n\nOpen positions stay open and stop being managed — "
-      + "no stop-loss, no take-profit, until it is started again.",
-  stopentry: "Stop opening new trades?\n\nExisting positions keep being managed normally.",
+      + "no stop-loss, no take-profit, until it is started again.\n\n"
+      + "This is remembered: a restart or redeploy will not quietly start it trading again.",
+  stopentry: "Stop opening new trades?\n\nExisting positions keep being managed normally.\n\n"
+      + "This is remembered across restarts.",
   start: "Start the bot?",
   reload_config: "Reload the configuration from disk?",
 };

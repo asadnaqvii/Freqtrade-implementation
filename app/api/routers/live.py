@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/live", tags=["live"])
 
 
-def _client_for_caller(db) -> BotClient:
+def _bot_for_caller(db) -> tuple[BotClient, dict]:
     """The bot this caller owns -- and nobody else's.
 
     Authentication is not authorization. A valid token only proves someone
@@ -61,7 +61,36 @@ def _client_for_caller(db) -> BotClient:
         owned[0]["api_base_url"],
         settings.bot.api_username,
         settings.bot.api_password,
-    )
+    ), owned[0]
+
+
+def _client_for_caller(db) -> BotClient:
+    return _bot_for_caller(db)[0]
+
+
+# What each control leaves the bot in. freqtrade keeps this in memory only, so a
+# redeploy or a restart would otherwise bring a deliberately stopped bot back up
+# trading. Recording the intent lets the bot read it back on boot.
+CONTROL_STATE = {"start": "running", "stop": "stopped", "stopentry": "paused"}
+
+
+def _record_intent(db, bot: dict, action: str) -> None:
+    """Remember that someone asked for this, so a restart does not undo it."""
+    state = CONTROL_STATE.get(action)
+    if state is None:  # reload_config changes settings, not whether it trades
+        return
+    try:
+        current = db.select_one("bot_instances", columns="metadata",
+                                filters={"id": f"eq.{bot['id']}"}) or {}
+        metadata = dict(current.get("metadata") or {})
+        metadata["desired_state"] = state
+        db.update("bot_instances", {"metadata": metadata},
+                  filters={"id": f"eq.{bot['id']}"})
+    except Exception:  # noqa: BLE001
+        # The bot has already accepted the command; failing to write the note
+        # must not turn a successful stop into an error the caller sees.
+        log.warning("could not record desired_state=%s for bot %s", state, bot.get("id"),
+                    exc_info=True)
 
 
 def _handle(exc: BotError):
@@ -183,10 +212,12 @@ async def control(body: ControlRequest, user: CurrentUser, db: UserDB) -> dict:
     gets asked later and deserves an answer that is not a shrug.
     """
     log.warning("bot control %s requested by %s", body.action, user.profile_id)
+    client, bot = _bot_for_caller(db)
     try:
-        result = _client_for_caller(db).act(body.action)
+        result = client.act(body.action)
     except BotError as exc:
         raise _handle(exc) from exc
+    _record_intent(db, bot, body.action)
     return {"result": result}
 
 

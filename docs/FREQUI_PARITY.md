@@ -18,6 +18,14 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
 | stop | done | halts entirely; open positions stop being managed |
 | pause / stopentry | done | stops opening new trades, keeps managing held ones — the safe stop |
 | reload config | done | |
+
+start, stop and pause are also **remembered**, which FreqUI's are not. freqtrade
+keeps that state in memory — `_rpc_stop` sets an attribute and nothing writes it
+down — so a restart brings a deliberately stopped bot back up trading. Render
+restarts a service on its own, not only when someone pushes. The control now
+records what was asked for on `bot_instances.metadata.desired_state`, and the bot
+reads it back into `initial_state` at boot. `FREQTRADE_INITIAL_STATE` overrides
+it, which is the way back up if the dashboard is the thing that is broken.
 | force exit (per trade) | done | on each open position |
 | force exit all | not done | |
 | force enter | **deliberately absent** | opening a position from a web page is a different kind of exposure from closing one; entries are the strategy's job |

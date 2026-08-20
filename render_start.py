@@ -72,6 +72,34 @@ db_schema = _env("FREQTRADE_DB_SCHEMA", "ft_main")
 bot_name = _env("BOT_NAME", "freqtrade-bot")
 dry_run = (_env("DRY_RUN", "false") or "false").lower() == "true"
 
+
+def _desired_state():
+    """running / paused / stopped, as the dashboard last left this bot.
+
+    Best effort in both directions: a bot that cannot reach the control plane
+    starts trading, because that is what it was deployed to do, and an
+    unrecognised value is treated as no answer rather than trusted into
+    freqtrade's config validator.
+    """
+    override = _env("FREQTRADE_INITIAL_STATE")
+    if override in ("running", "paused", "stopped"):
+        return override
+    try:
+        from app.core.supabase import SupabaseClient
+
+        row = SupabaseClient.service().select_one(
+            "bot_instances", columns="metadata", filters={"name": f"eq.{bot_name}"}
+        ) or {}
+        state = (row.get("metadata") or {}).get("desired_state")
+        if state in ("running", "paused", "stopped"):
+            if state != "running":
+                print(f"starting {state}: the dashboard last asked for this", flush=True)
+            return state
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not read desired state ({exc}); starting running", flush=True)
+    return "running"
+
+
 config = {
     "max_open_trades": int(_env("FREQTRADE_MAX_OPEN_TRADES", "6") or 6),
     "stake_currency": _env("FREQTRADE_STAKE_CURRENCY", "USDT"),
@@ -130,7 +158,11 @@ config = {
         "password": _env("API_PASSWORD", "freqtrader"),
     },
     "bot_name": bot_name,
-    "initial_state": "running",
+    # Not hardcoded to "running": freqtrade keeps its running/stopped state in
+    # memory, so a redeploy would restart a bot somebody deliberately stopped --
+    # with real money and a live strategy, that is the wrong default. The
+    # dashboard records what was asked for; this reads it back.
+    "initial_state": _desired_state(),
     "force_entry_enable": True,
     "internals": {"process_throttle_secs": 5},
     "strategy": strategy,
