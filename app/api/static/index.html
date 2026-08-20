@@ -212,6 +212,34 @@
     font-variant-numeric:tabular-nums;
   }
   .chart .cross { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+  /* Trade outcomes are printed straight onto the candles, so they get a halo in
+     the panel colour rather than a label box that would hide the price. */
+  .chart .lbl.on-plot {
+    font-weight:600; paint-order:stroke fill;
+    stroke:var(--panel); stroke-width:3px; stroke-linejoin:round;
+  }
+
+  /* Candle legend: the marks mean four different things, and a chart that needs
+     a paragraph to explain its symbols has not finished being a chart. */
+  .candle-key {
+    display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:10px;
+    font-size:11.5px; color:var(--muted);
+  }
+  .candle-key span { display:inline-flex; align-items:center; gap:6px; }
+  .candle-key i { display:inline-block; width:10px; height:10px; flex:none; }
+  .candle-key .k-tri {
+    width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent;
+    border-bottom:8px solid var(--pos);
+  }
+  .candle-key .k-x {
+    background:
+      linear-gradient(45deg, transparent 42%, var(--info) 42%, var(--info) 58%, transparent 58%),
+      linear-gradient(-45deg, transparent 42%, var(--info) 42%, var(--info) 58%, transparent 58%);
+  }
+  .candle-key .k-dot { border-radius:50%; }
+  .candle-key .k-dot.pos { background:var(--pos); }
+  .candle-key .k-dot.neg { background:var(--neg); }
+  .candle-key .k-band { background:var(--accent); opacity:.25; width:16px; border-radius:2px; }
 
   table.heat { border-collapse:separate; border-spacing:2px; }
   table.heat th, table.heat td { border:none; padding:0; }
@@ -619,6 +647,35 @@
 
     <div class="card">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Price and signals</h2>
+        <span class="mono muted" id="candle-title" style="font-size:12px"></span>
+        <span style="flex:1"></span>
+        <select id="candle-pair" style="width:auto;min-width:150px"></select>
+        <select id="candle-limit" style="width:auto">
+          <option value="200">200 candles</option>
+          <option value="500" selected>500 candles</option>
+          <option value="1000">1000 candles</option>
+          <option value="1500">1500 candles</option>
+        </select>
+      </div>
+      <p class="hint">The strategy's own dataframe, straight from the running bot &mdash; so the
+        signals drawn here are the ones it actually computed. A triangle is an entry signal and a
+        cross an exit signal; the filled circles are trades that really happened, and the shaded
+        band is the time a position was held. A signal with no circle under it is one the bot
+        chose not to act on, usually for want of a free slot or the stake to fill it.</p>
+      <div id="candle-box"><div class="empty">&mdash;</div></div>
+      <div class="candle-key" id="candle-key" hidden>
+        <span><i class="k-tri"></i>Entry signal</span>
+        <span><i class="k-x"></i>Exit signal</span>
+        <span><i class="k-dot pos"></i>Entry fill</span>
+        <span><i class="k-dot neg"></i>Exit fill</span>
+        <span><i class="k-band"></i>Position held</span>
+      </div>
+      <p class="hint" id="candle-meta" style="margin:10px 0 0"></p>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Profit over time</h2>
         <span class="spacer" style="flex:1"></span>
         <div class="chips" id="live-period">
@@ -688,11 +745,25 @@
 
     <div class="card">
       <h2>Closed trades</h2>
+      <p class="hint">The bot's own list, as it holds it in memory.</p>
       <div class="scroll"><table><thead><tr>
         <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Entry</th><th class="r">Exit</th>
         <th class="r">Profit</th><th class="r">%</th><th>Reason</th>
       </tr></thead><tbody id="closed-rows">
         <tr><td colspan="8" class="empty">No closed trades</td></tr>
+      </tbody></table></div>
+    </div>
+
+    <div class="card">
+      <h2>Trade history in the database</h2>
+      <p class="hint">The same trades read from Postgres instead of from the bot. This is the
+        copy that survives a redeploy, so it is the one to trust when the two disagree &mdash;
+        and the only one still here when the bot is down.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Opened</th><th class="r">Amount</th><th class="r">Entry</th>
+        <th class="r">Exit</th><th class="r">Profit</th><th>Reason</th>
+      </tr></thead><tbody id="trade-rows">
+        <tr><td colspan="7" class="empty">No trades</td></tr>
       </tbody></table></div>
     </div>
 
@@ -1358,6 +1429,17 @@ async function loadBots() {
       <td class="muted">${shortDate(b.last_heartbeat_at)}</td></tr>`).join("")
     : '<tr><td colspan="7" class="empty">No bots registered</td></tr>';
 
+  try {
+    await loadStoredTrades();
+  } catch (e) {
+    $("trade-rows").innerHTML =
+      `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Read from Postgres, not from the bot: this is the copy that outlives a
+// redeploy, and the only history left when the bot is unreachable.
+async function loadStoredTrades() {
   const { trades } = await api("/api/bots/live/trades");
   $("trade-rows").innerHTML = trades.length ? trades.map(t => `<tr>
       <td>${esc(t.pair)}</td><td class="muted">${shortDate(t.open_date)}</td>
@@ -1510,6 +1592,7 @@ async function loadLive() {
 
   // open positions
   const open = Array.isArray(o.status) ? o.status : (o.status?.data || []);
+  liveOpenTrades = open;
   $("pos-rows").innerHTML = open.length ? open.map(t => {
     const abs = Number(t.profit_abs ?? 0), pct = Number(t.profit_pct ?? (t.profit_ratio * 100) ?? 0);
     return `<tr>
@@ -1558,7 +1641,7 @@ async function loadLive() {
   loadLiveExtras(stake);
 }
 
-let livePeriod = "daily", perfView = "performance";
+let livePeriod = "daily", perfView = "performance", liveWhitelist = [], slowRefreshAt = 0;
 
 document.querySelectorAll("#live-period [data-lp]").forEach(b => b.onclick = () => {
   document.querySelectorAll("#live-period [data-lp]").forEach(x => x.classList.remove("active"));
@@ -1610,7 +1693,11 @@ async function loadWalletHistory(stake = "") {
     // Columnar, not row objects: {columns: ["date","__date_ts","total_quote"],
     // data: [[...], ...]}. Reading it as objects yielded NaN for every point.
     const cols = d.columns || [];
-    const iDate = cols.indexOf("date"), iVal = cols.indexOf("total_quote");
+    const iDate = cols.indexOf("date");
+    // Older bots label the column `balance`; take whichever is present rather
+    // than reporting "not enough history" for a payload that is full of it.
+    const iVal = cols.indexOf("total_quote") >= 0
+      ? cols.indexOf("total_quote") : cols.indexOf("balance");
     const points = (d.data || [])
       .map(row => Array.isArray(row)
         ? { x: row[iDate], y: Number(row[iVal]) }
@@ -1719,7 +1806,8 @@ async function loadLiveExtras(stake) {
 
   try {
     const t = await api("/api/live/trades");
-    const rows = (t.trades || []).filter(x => !x.is_open).slice(-60).reverse();
+    liveClosedTrades = (t.trades || []).filter(x => !x.is_open);
+    const rows = liveClosedTrades.slice(-60).reverse();
     $("closed-rows").innerHTML = rows.length ? rows.map(x => {
       const abs = Number(x.profit_abs ?? 0), pct = Number(x.profit_pct ?? 0);
       return `<tr>
@@ -1737,12 +1825,28 @@ async function loadLiveExtras(stake) {
   try {
     const w = await api("/api/live/whitelist");
     const pairs = w.whitelist || [];
+    liveWhitelist = pairs;
     $("whitelist-box").innerHTML = pairs.length
       ? `<div class="chips">${pairs.map(x => `<span class="chip-pair">${esc(x)}</span>`).join("")}</div>
          <p class="hint" style="margin:8px 0 0">${pairs.length} pairs · method
          ${esc((w.method || []).join(", ") || "—")}</p>`
       : '<div class="empty">No pairs currently whitelisted</div>';
   } catch { $("whitelist-box").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  // The chart wants both halves of the history and the list of pairs to offer,
+  // all of which have just been fetched -- so it draws from those rather than
+  // asking the bot for them a second time.
+  liveTradeCache = [...liveOpenTrades, ...liveClosedTrades];
+  setCandlePairs(liveWhitelist, [...new Set(liveOpenTrades.map(x => x.pair))]);
+
+  // The page repolls every 15 seconds, which is right for prices and wrong for
+  // five hundred candles: redrawing that often costs a few hundred kilobytes
+  // over the private network and throws away whatever the cursor was hovering.
+  if (Date.now() - slowRefreshAt > 60000) {
+    slowRefreshAt = Date.now();
+    loadCandles().catch(() => {});
+    loadStoredTrades().catch(() => {});
+  }
 
   try {
     const l = await api("/api/live/logs");
@@ -1752,6 +1856,283 @@ async function loadLiveExtras(stake) {
     $("bot-log").classList.remove("muted");
   } catch (e) { $("bot-log").textContent = `Log unavailable: ${e.message}`; }
 }
+
+// ── candlestick chart ───────────────────────────────────────
+// The one thing FreqUI has that a table cannot replace: where the strategy
+// entered and exited, against what the price was doing at the time.
+//
+// freqtrade returns this columnar -- {columns: [...], data: [[...], ...]} --
+// so every read goes through the column index rather than a property name.
+
+const CANDLE = { W: 1180, H: 460, VOL: 78, L: 34, R: 62, T: 16, B: 26 };
+
+function candleChart(payload, trades) {
+  const cols = payload.columns || [];
+  const rows = payload.data || [];
+  if (!rows.length) return '<div class="empty">No candles for this pair yet</div>';
+
+  const at = (name) => cols.indexOf(name);
+  const iDate = at("__date_ts") >= 0 ? at("__date_ts") : at("date");
+  const iO = at("open"), iH = at("high"), iL = at("low"), iC = at("close"), iV = at("volume");
+  // freqtrade renamed these over the years; accept whichever the strategy emits.
+  const iEnter = [at("enter_long"), at("buy")].find(i => i >= 0);
+  const iExit = [at("exit_long"), at("sell")].find(i => i >= 0);
+  if (iO < 0 || iC < 0 || iH < 0 || iL < 0) return '<div class="empty">Unexpected candle format</div>';
+
+  const t = (r) => typeof r[iDate] === "number" ? r[iDate] : +new Date(r[iDate]);
+  const lo = Math.min(...rows.map(r => Number(r[iL])));
+  const hi = Math.max(...rows.map(r => Number(r[iH])));
+  const pad = (hi - lo) * 0.06 || (hi * 0.01) || 1;
+  const top = hi + pad, bottom = lo - pad;
+
+  const plotH = CANDLE.H - CANDLE.T - CANDLE.B - CANDLE.VOL;
+  const step = (CANDLE.W - CANDLE.L - CANDLE.R) / rows.length;
+  const bodyW = Math.max(1, Math.min(9, step * 0.68));
+  const x = (i) => CANDLE.L + i * step + step / 2;
+  const y = (v) => CANDLE.T + (top - v) / (top - bottom) * plotH;
+
+  const maxVol = Math.max(...rows.map(r => Number(r[iV]) || 0), 1);
+  const volY = CANDLE.T + plotH + 16;
+  const vh = (v) => (Number(v) || 0) / maxVol * (CANDLE.VOL - 16);
+
+  const candles = rows.map((r, i) => {
+    const o = Number(r[iO]), c = Number(r[iC]);
+    const colour = c >= o ? "var(--pos)" : "var(--neg)";
+    const bodyTop = y(Math.max(o, c));
+    const bodyH = Math.max(1, Math.abs(y(o) - y(c)));
+    return `<line x1="${x(i).toFixed(1)}" y1="${y(Number(r[iH])).toFixed(1)}"
+        x2="${x(i).toFixed(1)}" y2="${y(Number(r[iL])).toFixed(1)}"
+        stroke="${colour}" stroke-width="1"/>
+      <rect x="${(x(i) - bodyW / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}"
+        width="${bodyW.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${colour}"/>`;
+  }).join("");
+
+  const volume = rows.map((r, i) => {
+    const h = vh(r[iV]);
+    return `<rect x="${(x(i) - bodyW / 2).toFixed(1)}" y="${(volY + (CANDLE.VOL - 16) - h).toFixed(1)}"
+      width="${bodyW.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--muted)" opacity=".35"/>`;
+  }).join("");
+
+  // Signal markers: a triangle under the low where the strategy said enter, a
+  // cross above the high where it said exit.
+  const marks = rows.map((r, i) => {
+    let out = "";
+    if (iEnter >= 0 && Number(r[iEnter])) {
+      const py = y(Number(r[iL])) + 9;
+      out += `<path d="M${(x(i) - 4).toFixed(1)},${py.toFixed(1)} L${(x(i) + 4).toFixed(1)},${py.toFixed(1)}
+        L${x(i).toFixed(1)},${(py - 7).toFixed(1)} Z" fill="var(--pos)"/>`;
+    }
+    if (iExit >= 0 && Number(r[iExit])) {
+      const py = y(Number(r[iH])) - 9;
+      out += `<path d="M${(x(i) - 4).toFixed(1)},${(py - 4).toFixed(1)} l8,8 M${(x(i) + 4).toFixed(1)},${(py - 4).toFixed(1)} l-8,8"
+        stroke="var(--info)" stroke-width="2" fill="none"/>`;
+    }
+    return out;
+  }).join("");
+
+  // Actual fills, which are not the same as signals: a signal the bot could not
+  // act on (no free slot, no balance) shows above with no fill beneath it, and
+  // that gap is worth being able to see. Bands go under the candles, dots over
+  // them -- a marker hidden behind a wick is a marker that did not get drawn.
+  const first = t(rows[0]), last = t(rows[rows.length - 1]);
+  const span = (last - first) || 1;
+  const nearest = (ms) => {
+    if (!Number.isFinite(ms) || ms < first || ms > last) return null;
+    return Math.round((ms - first) / span * (rows.length - 1));
+  };
+  // The exit cross already occupies the space above the candle, so the profit
+  // label sits below the dot -- flipping above only when it would fall off.
+  const labelY = (py) => (py + 24 < CANDLE.T + plotH ? py + 23 : py - 14).toFixed(1);
+  const bands = [], dots = [];
+  let drawn = 0;
+  (trades || []).forEach(tr => {
+    const openAt = nearest(+new Date(tr.open_date));
+    const closeAt = tr.close_date ? nearest(+new Date(tr.close_date)) : null;
+    if (openAt == null && closeAt == null) return;
+    drawn += 1;
+
+    // An open position runs to the right edge; a closed one stops where it closed.
+    const from = openAt == null ? 0 : openAt;
+    const to = closeAt == null ? rows.length - 1 : closeAt;
+    bands.push(`<rect x="${x(from).toFixed(1)}" y="${CANDLE.T}"
+      width="${Math.max(1, x(to) - x(from)).toFixed(1)}" height="${plotH.toFixed(1)}"
+      fill="var(--accent)" opacity="${closeAt == null ? ".11" : ".07"}"/>`);
+
+    if (openAt != null) {
+      dots.push(`<circle cx="${x(openAt).toFixed(1)}" cy="${y(Number(tr.open_rate)).toFixed(1)}"
+        r="4" fill="var(--pos)" stroke="var(--panel)" stroke-width="1.5">
+        <title>Entered ${esc(tr.pair)} at ${fmtNum(tr.open_rate, 6)}</title></circle>`);
+    }
+    if (closeAt != null) {
+      const pct = pctOf(tr);
+      const tone = pct >= 0 ? "pos" : "neg";
+      dots.push(`<circle cx="${x(closeAt).toFixed(1)}" cy="${y(Number(tr.close_rate)).toFixed(1)}"
+        r="4" fill="var(--${tone})" stroke="var(--panel)" stroke-width="1.5">
+        <title>Exited at ${fmtNum(tr.close_rate, 6)} — ${fmtNum(pct)}% (${esc(tr.exit_reason || "")})</title></circle>
+        <text class="lbl on-plot" x="${x(closeAt).toFixed(1)}" y="${labelY(y(Number(tr.close_rate)))}"
+          text-anchor="middle" fill="var(--${tone})"
+          >${pct >= 0 ? "+" : ""}${fmtNum(pct, 2)}%</text>`);
+    }
+  });
+
+  const ticks = niceTicks(bottom, top, 5).map(v =>
+    `<line class="gl" x1="${CANDLE.L}" y1="${y(v).toFixed(1)}" x2="${CANDLE.W - CANDLE.R}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${CANDLE.W - CANDLE.R + 6}" y="${(y(v) + 3).toFixed(1)}">${fmtNum(v, priceDigits(hi))}</text>`
+  ).join("");
+
+  const label = (ms) => new Date(ms).toISOString().slice(5, 16).replace("T", " ");
+  const every = Math.max(1, Math.floor(rows.length / 8));
+  const dates = rows.map((r, i) => i % every ? "" :
+    `<text class="lbl" x="${x(i).toFixed(1)}" y="${CANDLE.H - 6}" text-anchor="middle">${label(t(r))}</text>`
+  ).join("");
+
+  // One transparent column per candle, last so it sits above every mark: the
+  // hit target for hovering has to be the whole column, not a 3px-wide body.
+  const cells = rows.map((r, i) =>
+    `<rect class="cand" x="${(x(i) - step / 2).toFixed(1)}" y="${CANDLE.T}"
+      width="${Math.max(step, 1).toFixed(1)}" height="${(plotH + CANDLE.VOL).toFixed(1)}"
+      fill="transparent" data-i="${i}"/>`).join("");
+
+  candleDrawn = drawn;
+  return `<div class="chartwrap" id="candle-wrap">
+    <svg class="chart" viewBox="0 0 ${CANDLE.W} ${CANDLE.H}" role="img"
+         aria-label="${rows.length} ${esc(payload.timeframe || "")} candles for ${esc(payload.pair || "")}">
+      ${ticks}
+      ${bands.join("")}
+      ${candles}
+      ${volume}
+      ${marks}
+      ${dots.join("")}
+      ${dates}
+      <line class="gl" x1="${CANDLE.L}" y1="${(volY + CANDLE.VOL - 16).toFixed(1)}"
+            x2="${CANDLE.W - CANDLE.R}" y2="${(volY + CANDLE.VOL - 16).toFixed(1)}"/>
+      <text class="lbl" x="${CANDLE.W - CANDLE.R + 6}" y="${(volY + CANDLE.VOL - 20).toFixed(1)}">vol</text>
+      ${cells}
+    </svg>
+    <div class="tip" hidden></div>
+  </div>`;
+}
+
+// Crypto prices span nine orders of magnitude across a whitelist; a fixed two
+// decimals turns SHIB into a row of zeroes and BTC into false precision.
+const priceDigits = (v) => Math.abs(Number(v)) >= 100 ? 2 : Math.abs(Number(v)) >= 1 ? 4 : 6;
+
+// freqtrade sends the timestamp as an ISO string on some builds and as epoch
+// milliseconds on others; both have to read the same in the tooltip.
+const stamp = (v) => typeof v === "number"
+  ? new Date(v).toISOString().slice(0, 16).replace("T", " ")
+  : String(v ?? "").slice(0, 16).replace("T", " ");
+
+const pctOf = (tr) => {
+  const direct = Number(tr.profit_pct);
+  if (Number.isFinite(direct)) return direct;
+  const ratio = Number(tr.profit_ratio);
+  return Number.isFinite(ratio) ? ratio * 100 : 0;
+};
+
+function attachCandleHover(payload) {
+  const wrap = $("candle-wrap");
+  if (!wrap) return;
+  const cols = payload.columns || [], rows = payload.data || [];
+  const at = (n) => cols.indexOf(n);
+  const idx = { d: at("date") >= 0 ? at("date") : at("__date_ts"),
+                o: at("open"), h: at("high"), l: at("low"),
+                c: at("close"), v: at("volume") };
+  const iEnter = [at("enter_long"), at("buy")].find(i => i >= 0);
+  const iExit = [at("exit_long"), at("sell")].find(i => i >= 0);
+  const tip = wrap.querySelector(".tip");
+
+  wrap.querySelectorAll(".cand").forEach(cell => {
+    cell.addEventListener("mouseenter", () => {
+      const r = rows[Number(cell.dataset.i)];
+      if (!r) return;
+      const o = Number(r[idx.o]), c = Number(r[idx.c]);
+      const d = priceDigits(c);
+      const move = o ? (c - o) / o * 100 : 0;
+      const flags = [];
+      if (iEnter >= 0 && Number(r[iEnter])) flags.push('<span class="pos">entry signal</span>');
+      if (iExit >= 0 && Number(r[iExit])) flags.push('<span class="info">exit signal</span>');
+      tip.hidden = false;
+      tip.innerHTML = `<b>${esc(stamp(r[idx.d]))}</b><br>
+        open ${fmtNum(o, d)}<br>high ${fmtNum(r[idx.h], d)}<br>
+        low ${fmtNum(r[idx.l], d)}<br>
+        <span class="${c >= o ? "pos" : "neg"}">close ${fmtNum(c, d)}
+          (${move >= 0 ? "+" : ""}${fmtNum(move, 2)}%)</span><br>
+        <span class="muted">vol ${fmtNum(r[idx.v], 2)}</span>
+        ${flags.length ? "<br>" + flags.join(" · ") : ""}`;
+      const box = wrap.getBoundingClientRect();
+      const px = Number(cell.getAttribute("x")) / CANDLE.W * box.width;
+      tip.style.left = `${Math.min(Math.max(0, px - 60), Math.max(0, box.width - 165))}px`;
+    });
+  });
+  wrap.addEventListener("mouseleave", () => { tip.hidden = true; });
+}
+
+let candlePair = null, candleTf = "", candleDrawn = 0;
+// Filled by loadLive/loadLiveExtras so drawing the chart costs no extra round
+// trip over the private network.
+let liveTradeCache = [], liveOpenTrades = [], liveClosedTrades = [];
+
+// The pairs worth offering: everything the bot is watching, plus anything it
+// currently holds even if a pairlist filter has since dropped it.
+function setCandlePairs(pairs, held = []) {
+  const sel = $("candle-pair");
+  if (!sel) return;
+  const all = [...new Set([...held, ...(pairs || [])])];
+  if (!all.length) {
+    sel.innerHTML = '<option value="">No pairs</option>';
+    return;
+  }
+  if (!candlePair || !all.includes(candlePair)) candlePair = all[0];
+  const html = all.map(p =>
+    `<option value="${esc(p)}"${p === candlePair ? " selected" : ""}>${esc(p)}${held.includes(p) ? " •" : ""}</option>`
+  ).join("");
+  // Only touch the DOM when the list really changed: rewriting it on every
+  // fifteen-second pass would close a dropdown the user had open.
+  if (sel.innerHTML !== html) sel.innerHTML = html;
+}
+
+async function loadCandles(pair) {
+  candlePair = pair || candlePair;
+  if (!candlePair) { $("candle-box").innerHTML = '<div class="empty">No pair to chart</div>'; return; }
+  const limit = $("candle-limit")?.value || "500";
+  $("candle-title").textContent = candleTf ? `· ${candleTf}` : "";
+  $("candle-box").innerHTML = '<div class="empty">Loading candles…</div>';
+  try {
+    const q = new URLSearchParams({ pair: candlePair, limit });
+    const payload = await api(`/api/live/candles?${q}`);
+    candleTf = payload.timeframe || candleTf;
+    $("candle-title").textContent = candleTf ? `· ${candleTf}` : "";
+
+    const trades = liveTradeCache.filter(t => t.pair === candlePair);
+    $("candle-box").innerHTML = candleChart(payload, trades);
+    attachCandleHover(payload);
+    $("candle-key").hidden = false;
+
+    const n = payload.length ?? (payload.data || []).length;
+    const entries = payload.enter_long_signals ?? payload.buy_signals ?? 0;
+    const exits = payload.exit_long_signals ?? payload.sell_signals ?? 0;
+    $("candle-meta").textContent =
+      `${n} candles · ${entries} entry signals · ${exits} exit signals · `
+      + `${candleDrawn} of this pair's trades fall inside the window`
+      + (payload.last_refresh ? ` · analysed ${shortDate(payload.last_refresh * 1000)}` : "");
+  } catch (e) {
+    // A pair the strategy is not analysing has no dataframe to return, and that
+    // is worth saying plainly rather than showing an empty chart.
+    $("candle-box").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    $("candle-key").hidden = true;
+    $("candle-meta").textContent = "";
+  }
+}
+
+$("candle-pair").onchange = (e) => {
+  slowRefreshAt = Date.now();
+  loadCandles(e.target.value).catch(() => {});
+};
+$("candle-limit").onchange = () => {
+  slowRefreshAt = Date.now();
+  loadCandles().catch(() => {});
+};
 
 // ── backtest: window, breakdown, and whether to believe it ──
 const isoDay = (d) => d.toISOString().slice(0, 10);

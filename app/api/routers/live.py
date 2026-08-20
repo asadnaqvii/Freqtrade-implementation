@@ -91,6 +91,31 @@ async def overview(db: UserDB) -> dict:
         raise _handle(exc) from exc
 
 
+@router.get("/candles")
+async def candles(
+    db: UserDB,
+    pair: str,
+    timeframe: str = "",
+    limit: int = 500,
+) -> dict:
+    """OHLCV for one pair, with the strategy's own entry and exit signals.
+
+    Declared before the generic /{section} read: a literal path after a
+    parameterised one never gets reached.
+    """
+    client = _client_for_caller(db)
+    try:
+        config = client.get("show_config") or {}
+        payload = client.get("pair_candles", {
+            "pair": pair,
+            "timeframe": timeframe or config.get("timeframe") or "5m",
+            "limit": max(50, min(limit, 1500)),
+        })
+    except BotError as exc:
+        raise _handle(exc) from exc
+    return payload if isinstance(payload, dict) else {"data": payload}
+
+
 @router.get("/{section}")
 async def section(section: str, db: UserDB) -> dict:
     """Any single read the bot permits, for panels that refresh on their own."""

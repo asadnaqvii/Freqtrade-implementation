@@ -67,6 +67,8 @@ class BotClient:
         "mix_tags",        # entry+exit tag combinations
         "stats",           # exit reason counts and trade durations
         "trades",          # closed trade history
+        "pair_candles",    # OHLCV plus the strategy's own signal columns
+        "plot_config",     # which indicators the strategy wants drawn
         "whitelist",       # pairs currently tradable
         "blacklist",       # pairs excluded
         "logs",            # recent bot log lines

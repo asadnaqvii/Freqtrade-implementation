@@ -25,8 +25,9 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
 ## Multi Pane panels
 
 1. **Pair list** — every whitelisted pair, with a filter box. Selecting one drives
-   the chart. *Shown as the current whitelist; no filter and it drives nothing yet,
-   because there is no chart for it to drive.*
+   the chart. *Shown as the current whitelist, and a dropdown of the same pairs
+   (plus anything currently held, whether or not a filter has since dropped it)
+   drives the chart. No filter box: a dropdown of eight pairs does not need one.*
 2. **Bot info** — version, state, strategy, timeframe, stake, max open trades,
    dry-run flag. *Done, as the status bar.*
 3. **Performance** — four sub-tabs, each `Name | Profit % | Profit USDT | Count`:
@@ -37,8 +38,8 @@ Six buttons: start, stop, pause, reload config, force-exit-all, force-enter.
 4. **Balance** — per currency. *Done.*
 5. **Period Breakdown** — Days / Weeks / Months, and Abs $ / Rel % toggles. A
    combined chart (profit line over trade-count bars) plus a table of
-   `Day | Profit | In USD | Trades | Profit%`. *Only a daily profit chart here;
-   no weeks/months, no table, no trade counts.*
+   `Day | Profit | In USD | Trades | Profit%`. *Done: Days/Weeks/Months toggle,
+   bars per period with the running total over them, and the table beneath.*
    - Note: FreqUI puts profit and trade count on two y-axes. Deliberately not
      copying that — a second scale invites reading the crossing point as
      meaningful when it is an artefact of the scaling. Two aligned plots instead.
@@ -60,7 +61,25 @@ Candlesticks with volume underneath, a pair selector, and a range slider. Overla
 Fed by `/api/v1/pair_candles`, which returns OHLCV plus the strategy's own
 indicator columns and the trade markers.
 
-*Not done, and the largest remaining gap.*
+*Done.* `GET /api/live/candles` proxies `pair_candles` through the same
+owner-scoped bot lookup as every other live read, and the page draws it as inline
+SVG — candles, volume, entry triangles, exit crosses, per-candle hover, shaded
+bands for the time a position was held, and a profit label on each closed trade.
+
+Four deliberate differences from FreqUI:
+
+- **Signals and fills are drawn as different marks.** A triangle is what the
+  strategy *said*; a filled circle is what the bot *did*. A signal with no circle
+  under it is one it could not act on — no free slot, or not enough stake — and
+  that gap is worth being able to see at a glance. FreqUI draws both as one mark.
+- **No range slider.** A candle-count selector (200–1500) instead. The slider
+  re-crops data already fetched; the selector decides how much to fetch, which is
+  the choice that actually costs anything over the private network.
+- **No Heikin Ashi or plot-config selector.** Both are strategy-authoring tools,
+  and this page is for watching a bot that is already running.
+- **Redraws at most once a minute**, not on the 15-second live poll. Five hundred
+  candles is a few hundred kilobytes and re-rendering throws away whatever the
+  cursor was hovering; prices in the panels above still move every 15 seconds.
 
 ## Open Trades (below the chart)
 
@@ -76,3 +95,19 @@ Open date`. *Done, plus held-duration and a close button.*
 - **Closed trades** with close reason. *Done.*
 - **Bot comparison** — one row per bot. Not replicated: there is one bot. The
   table exists in the database (`bot_instances`) if that changes.
+
+## Beyond FreqUI
+
+- **Trade history in the database** — the same closed trades read from Postgres
+  rather than from the bot. FreqUI has no equivalent because it has no database
+  behind it: its history is whatever the running process holds. This is the copy
+  that survives a redeploy, and the only one still there when the bot is down.
+
+## Still outstanding
+
+- **Locks panel** — `locks` is allowlisted on the bot client and the endpoint
+  answers; there is no panel rendering it.
+- **Force exit all** — deliberate: closing every position at once is a decision
+  that wants more friction than a button, and closing them one at a time works.
+- **Two-column layout** — FreqUI puts the Multi Pane beside the chart. Everything
+  in that pane exists here, stacked rather than side by side.
