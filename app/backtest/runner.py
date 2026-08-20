@@ -382,6 +382,20 @@ def _requested_bounds(timerange: str | None) -> tuple[datetime | None, datetime 
     return one(start), one(end)
 
 
+def _requested_span_days(timerange: str | None) -> int | None:
+    """Days from the requested start until now, for --new-pairs-days.
+
+    Measured to now rather than to the requested end: freqtrade counts backwards
+    from today, so asking for the window's own length would land short whenever
+    the window ends in the past.
+    """
+    start, _ = _requested_bounds(timerange)
+    if start is None:
+        return None
+    days = (datetime.now(timezone.utc) - start).days
+    return max(days + 1, 1) if days > 0 else None
+
+
 def _cached_start(data_dir: Path, pairs: list[str], timeframe: str) -> datetime | None:
     """The oldest candle currently on disk across these pairs.
 
@@ -480,6 +494,15 @@ def run_backtest(
                 "--timeframes", request.timeframe,
                 "--pairs", *request.pairs,
             ]
+
+            # For a pair it has never cached, freqtrade downloads new_pairs_days
+            # -- thirty by default -- and ignores --timerange entirely. That is
+            # why a seven-year request came back holding one month, and why the
+            # prepend loop then had to claw the rest back a chunk at a time. Ask
+            # for the whole span up front instead.
+            span_days = _requested_span_days(request.timerange)
+            if span_days:
+                base_cmd += ["--new-pairs-days", str(span_days)]
             # Wider than what gets tested: see download_timerange.
             fetch_range = download_timerange(request)
             timerange_args = ["--timerange", fetch_range] if fetch_range else []

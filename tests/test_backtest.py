@@ -590,3 +590,35 @@ def test_equity_downsample_actually_respects_its_cap():
     # The ends must survive downsampling or the chart's range shifts.
     assert rows[0]["at"].startswith("2018-01-01")
     assert rows[-1]["at"].startswith(str(stamps[-1].date()))
+
+
+# ---------------------------------------------------------------------------
+# new_pairs_days: the 30-day floor on anything never cached
+# ---------------------------------------------------------------------------
+
+def test_the_first_download_asks_for_the_whole_requested_span():
+    """freqtrade downloads new_pairs_days (30) for an uncached pair.
+
+    It ignores --timerange for that first fetch, which is why a seven-year
+    request produced a cache starting thirty days ago, and why the log read
+    "have from 2026-07-21" for a window meant to begin in 2019.
+    """
+    from app.backtest.runner import _requested_span_days
+
+    days = _requested_span_days("20190820-20260820")
+    assert days is not None and days > 2500, days
+
+
+def test_the_span_is_measured_to_now_not_to_the_window_end():
+    # freqtrade counts new_pairs_days backwards from today, so a window that
+    # ended in the past needs the longer distance or the fetch lands short.
+    from app.backtest.runner import _requested_span_days
+
+    assert _requested_span_days("20220101-20221231") > 365 * 3
+
+
+def test_no_window_leaves_freqtrades_own_default_alone():
+    from app.backtest.runner import _requested_span_days
+
+    assert _requested_span_days(None) is None
+    assert _requested_span_days("rubbish") is None
