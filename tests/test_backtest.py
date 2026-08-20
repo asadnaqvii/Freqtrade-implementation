@@ -9,7 +9,9 @@ not `win_rate`, `profit_total` as a ratio, `max_drawdown_account`, durations as
 from __future__ import annotations
 
 import json
+import tempfile
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -323,3 +325,44 @@ def test_equity_curve_survives_a_wallet_with_nothing_in_it():
 
     empty = pd.DataFrame({"date": [], "total_quote": []})
     assert BacktestExport({"strategy": {"S": {}}}, wallet=empty).equity_rows("run-1") == []
+
+
+# ---------------------------------------------------------------------------
+# Reaching the real start of history
+# ---------------------------------------------------------------------------
+
+def test_cached_start_takes_the_newest_pair_start():
+    """A backtest spans its pairs together, so the youngest one bounds it."""
+    import pandas as pd
+
+    from app.backtest.runner import _cached_start
+
+    root = Path(tempfile.mkdtemp())
+    folder = root / "kucoin"
+    folder.mkdir(parents=True)
+    for stem, start in (("BTC_USDT", "2017-10-19"), ("ETH_USDT", "2021-02-04")):
+        pd.DataFrame({
+            "date": pd.to_datetime([start, "2026-01-01"], utc=True),
+            "open": [1.0, 2.0], "high": [1.0, 2.0], "low": [1.0, 2.0],
+            "close": [1.0, 2.0], "volume": [1.0, 2.0],
+        }).to_feather(folder / f"{stem}-1d.feather")
+
+    found = _cached_start(root, "kucoin", ["BTC/USDT", "ETH/USDT"], "1d")
+    assert found.date().isoformat() == "2021-02-04"
+
+
+def test_cached_start_is_unknown_when_a_pair_has_no_file():
+    from app.backtest.runner import _cached_start
+
+    root = Path(tempfile.mkdtemp())
+    (root / "kucoin").mkdir(parents=True)
+    assert _cached_start(root, "kucoin", ["BTC/USDT"], "1d") is None
+
+
+def test_requested_bounds_parses_both_halves():
+    from app.backtest.runner import _requested_bounds
+
+    start, end = _requested_bounds("20200101-20260819")
+    assert start.year == 2020 and end.year == 2026
+    assert _requested_bounds(None) == (None, None)
+    assert _requested_bounds("nonsense") == (None, None)

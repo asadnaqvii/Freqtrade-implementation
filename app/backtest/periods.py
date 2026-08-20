@@ -249,12 +249,10 @@ def coverage(requested: str | None, actual_start: Any, actual_end: Any,
         f"and only {got_days} days were available "
         f"({got_start:%Y-%m-%d} to {got_end:%Y-%m-%d}) — {pct:.0f}% of the request. "
     )
-    if timeframe and timeframe.endswith("m"):
-        note += (
-            f"Exchanges keep much less history at {timeframe} than at daily candles. "
-            "For a multi-year test use 1h or 1d, or shorten the window."
-        )
-    else:
-        note += "The exchange does not have candles going back that far for these pairs."
+    note += (
+        "That is where this exchange's candles for these pairs begin. Another venue "
+        "may go further back — check with the history button on the backtest form, "
+        "and remember the exchange you backtest on need not be the one you trade on."
+    )
     return {"requested_timerange": requested, "coverage_pct": round(pct, 2),
             "coverage_note": note}

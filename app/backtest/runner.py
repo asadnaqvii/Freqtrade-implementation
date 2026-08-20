@@ -30,6 +30,11 @@ from app.backtest.parser import BacktestExport
 
 log = logging.getLogger(__name__)
 
+#: How many times to ask for older candles before accepting that the history has
+#: run out. Each pass costs a few seconds and only continues while it is still
+#: reaching further back, so this is a backstop, not a budget.
+MAX_PREPEND_PASSES = 12
+
 # freqtrade accepts YYYYMMDD-YYYYMMDD, with either side optional.
 TIMERANGE_RE = re.compile(r"^(\d{8})?-(\d{8})?$")
 PAIR_RE = re.compile(r"^[A-Z0-9]{1,20}/[A-Z0-9]{1,20}$")
@@ -252,6 +257,59 @@ def _explain_failure(output: str, request: BacktestRequest) -> str:
     return f"freqtrade exited with an error:\n{tail}"
 
 
+def _requested_bounds(timerange: str | None) -> tuple[datetime | None, datetime | None]:
+    """freqtrade's YYYYMMDD-YYYYMMDD, either side optionally blank."""
+    if not timerange or "-" not in timerange:
+        return None, None
+    start, _, end = timerange.partition("-")
+
+    def one(part: str) -> datetime | None:
+        part = part.strip()
+        if len(part) != 8 or not part.isdigit():
+            return None
+        try:
+            return datetime.strptime(part, "%Y%m%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    return one(start), one(end)
+
+
+def _cached_start(data_dir: Path, exchange: str, pairs: list[str], timeframe: str) -> datetime | None:
+    """The oldest candle currently on disk across these pairs.
+
+    A backtest spans its pairs together, so the newest of the per-pair starts is
+    what actually bounds the window. Used to tell whether another prepend pass
+    achieved anything.
+    """
+    try:
+        import pandas as pd
+    except ImportError:  # pragma: no cover - pandas is a hard dependency here
+        return None
+
+    folder = data_dir / exchange.lower()
+    starts: list[datetime] = []
+    for pair in pairs:
+        stem = pair.replace("/", "_").replace(":", "_")
+        found = None
+        for suffix in (".feather", ".json", ".json.gz", ".parquet"):
+            candidate = folder / f"{stem}-{timeframe}{suffix}"
+            if candidate.exists():
+                found = candidate
+                break
+        if found is None:
+            return None
+        try:
+            frame = pd.read_feather(found) if found.suffix == ".feather" else None
+            if frame is None or "date" not in frame.columns or frame.empty:
+                return None
+            starts.append(pd.to_datetime(frame["date"].iloc[0], utc=True).to_pydatetime())
+        except Exception as exc:  # noqa: BLE001 - an unreadable cache is just unknown
+            log.info("could not read cached candles at %s: %s", found, exc)
+            return None
+    return max(starts) if starts else None
+
+
 def run_backtest(
     request: BacktestRequest,
     *,
@@ -316,13 +374,40 @@ def run_backtest(
             # present, downloaded nothing, and quietly backtested that month.
             # The result reported success over 29 days having been asked for a
             # decade, which is the worst possible way to be wrong.
-            passes: list[tuple[str, list[str]]] = []
-            if request.timerange:
-                passes.append(("extending history backwards",
-                               base_cmd + timerange_args + ["--prepend"]))
-            passes.append(("fetching recent candles", base_cmd + timerange_args))
+            want_start, _ = _requested_bounds(request.timerange)
 
-            for label, cmd in passes:
+            # Prepend repeatedly rather than once. A single pass reaches back
+            # only so far -- exchanges cap candles per request and freqtrade
+            # does not loop indefinitely -- which is why asking for six years
+            # produced five and a half and looked like the venue's limit. Keep
+            # going while each pass actually moves the start earlier, and stop
+            # the moment it does not: that is the real end of the history.
+            if request.timerange:
+                previous = _cached_start(data_path, request.exchange, request.pairs,
+                                         request.timeframe)
+                for attempt in range(1, MAX_PREPEND_PASSES + 1):
+                    if want_start and previous and previous <= want_start:
+                        break
+                    if progress:
+                        reached = previous.date().isoformat() if previous else "…"
+                        progress(f"extending history backwards (pass {attempt}, "
+                                 f"have from {reached})")
+                    code, output = _run(base_cmd + timerange_args + ["--prepend"],
+                                        cwd=workdir, timeout=timeout_seconds)
+                    if code != 0:
+                        log.warning("download-data --prepend exited %s: %s",
+                                    code, output[-400:])
+                        break
+                    current = _cached_start(data_path, request.exchange, request.pairs,
+                                            request.timeframe)
+                    if current is None or (previous is not None and current >= previous):
+                        # No further back than last time: this is the venue's
+                        # earliest candle, not a cap we can push through.
+                        previous = current or previous
+                        break
+                    previous = current
+
+            for label, cmd in (("fetching recent candles", base_cmd + timerange_args),):
                 if progress:
                     progress(label)
                 code, output = _run(cmd, cwd=workdir, timeout=timeout_seconds)

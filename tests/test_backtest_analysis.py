@@ -255,7 +255,10 @@ def test_ten_years_answered_with_a_month_is_recorded_as_such():
                  timeframe="5m")
     assert c["coverage_pct"] < 1
     assert "asked for" in c["coverage_note"]
-    assert "1h or 1d" in c["coverage_note"], "a 5m request should suggest a coarser candle"
+    # The note must not blame the timeframe: KuCoin keeps 8.8 years even at 5m,
+    # so "fine candles do not go back far" was simply wrong. Point at other venues.
+    assert "another venue" in c["coverage_note"].lower()
+    assert "1h or 1d" not in c["coverage_note"]
 
 
 def test_a_window_that_was_actually_covered_carries_no_complaint():
