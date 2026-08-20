@@ -186,6 +186,18 @@ class WalletProvider(abc.ABC):
     def fetch_orders(self, symbol: str, *, since: datetime | None = None, limit: int = 100) -> list[OrderInfo]:
         ...
 
+    def fetch_order(self, order_id: str, symbol: str) -> OrderInfo | None:
+        """One order by its venue id, or None if the venue does not know it.
+
+        Optional, and separate from fetch_orders for a reason: bulk listings are
+        windowed differently at every venue -- KuCoin does not implement
+        fetchOrders at all and its closed-order listing is time-limited -- so
+        "not in the list" is not the same question as "the venue has no such
+        order". Reconciliation needs the second one before it accuses a bot of
+        inventing a trade.
+        """
+        raise ProviderError(f"{self.name} cannot look up a single order")
+
     # -- optional ----------------------------------------------------------
     def earliest_candle(self, symbol: str, timeframe: str = "1d") -> datetime | None:
         """When this venue's history for a pair begins, or None if unknown.

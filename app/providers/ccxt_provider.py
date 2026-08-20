@@ -345,6 +345,22 @@ class CcxtProvider(WalletProvider):
 
         return [_to_order(o) for o in raw]
 
+    def fetch_order(self, order_id: str, symbol: str) -> OrderInfo | None:
+        # Imported here like everywhere else in this module: ccxt is a heavy
+        # dependency the app can start without.
+        import ccxt
+
+        if not self.exchange.has.get("fetchOrder"):
+            raise ProviderError(f"{self.ccxt_id} cannot look up a single order through ccxt")
+        try:
+            return _to_order(self.exchange.fetch_order(order_id, symbol))
+        except ccxt.OrderNotFound:
+            # An answer, not a failure: it is exactly the finding reconciliation
+            # is trying to establish.
+            return None
+        except Exception as exc:  # noqa: BLE001
+            raise self._translate(exc) from exc
+
     def describe(self) -> dict[str, Any]:
         base = super().describe()
         base.update({"ccxt_id": self.ccxt_id})

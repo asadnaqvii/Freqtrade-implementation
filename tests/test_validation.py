@@ -503,3 +503,86 @@ def test_a_pair_the_venue_does_not_list_is_refused_clearly():
     exchange = CandleExchange(datetime(2020, 1, 1, tzinfo=timezone.utc))
     with pytest.raises(ProviderError, match="does not list"):
         _provider_with(exchange).earliest_candle("NOPE/USDT")
+
+
+# ---------------------------------------------------------------------------
+# "Not in the listing" is not "not at the venue"
+# ---------------------------------------------------------------------------
+
+def test_an_order_missing_from_the_listing_is_confirmed_before_being_reported():
+    """The false alarm this raised on the first real live trade.
+
+    KuCoin implements no fetchOrders at all and its closed-order listing is
+    window-limited, so an order placed minutes ago can be absent from a
+    thirty-day query. Reporting that as "the bot recorded an order the exchange
+    does not have" accuses the bot of inventing a trade that plainly happened --
+    and a verification that cries wolf on every live order gets ignored, which
+    is worse than not running it.
+    """
+    from app.providers.base import OrderInfo
+    from app.validation.reconcile import reconcile_orders
+
+    real = OrderInfo(order_id="abc123", symbol="XMR/USDT", side="buy", status="closed",
+                     order_type="limit", price=417.51, average=417.51, amount=0.567,
+                     filled=0.567, remaining=0.0, cost=236.72817, fee_cost=None,
+                     fee_currency=None, timestamp=None)
+
+    class Provider:
+        name = "kucoin"
+        looked_up = []
+
+        def fetch_orders(self, symbol, *, since=None, limit=100):
+            return []                      # the windowed listing misses it
+
+        def fetch_order(self, order_id, symbol):
+            self.looked_up.append((order_id, symbol))
+            return real if order_id == "abc123" else None
+
+    provider = Provider()
+    findings = reconcile_orders(provider, [{
+        "pair": "XMR/USDT", "ft_order_id": "15", "exchange_order_id": "abc123",
+        "status": "closed", "side": "buy", "price": 417.51, "average": 417.51,
+        "amount": 0.567, "filled": 0.567, "cost": 236.72817,
+    }])
+    assert provider.looked_up == [("abc123", "XMR/USDT")], "it never asked the venue directly"
+    kinds = {f.kind for f in findings}
+    assert "missing_on_exchange" not in kinds, f"real order reported as missing: {kinds}"
+
+
+def test_an_order_the_venue_really_does_not_have_is_still_reported():
+    """The direct lookup must not turn the check into a rubber stamp."""
+    from app.validation.reconcile import reconcile_orders
+
+    class Provider:
+        name = "kucoin"
+
+        def fetch_orders(self, symbol, *, since=None, limit=100):
+            return []
+
+        def fetch_order(self, order_id, symbol):
+            return None
+
+    findings = reconcile_orders(Provider(), [{
+        "pair": "XMR/USDT", "ft_order_id": "15", "exchange_order_id": "ghost",
+        "status": "closed", "side": "buy",
+    }])
+    assert any(f.kind == "missing_on_exchange" for f in findings)
+
+
+def test_a_provider_that_cannot_look_one_up_still_reports_rather_than_crashing():
+    from app.providers.base import ProviderError
+    from app.validation.reconcile import reconcile_orders
+
+    class Provider:
+        name = "paper"
+
+        def fetch_orders(self, symbol, *, since=None, limit=100):
+            return []
+
+        def fetch_order(self, order_id, symbol):
+            raise ProviderError("no single-order lookup here")
+
+    findings = reconcile_orders(Provider(), [{
+        "pair": "XMR/USDT", "ft_order_id": "15", "exchange_order_id": "abc123",
+    }])
+    assert any(f.kind == "missing_on_exchange" for f in findings)

@@ -107,6 +107,16 @@ def reconcile_orders(
 
             venue = venue_by_id.get(exchange_id)
             if venue is None:
+                # Not in the listing is not the same as not at the venue. KuCoin
+                # has no fetchOrders at all and its closed-order listing is
+                # window-limited, so a real order placed today can be absent
+                # from a thirty-day query. Ask about this order specifically
+                # before reporting it as missing.
+                try:
+                    venue = provider.fetch_order(exchange_id, pair)
+                except ProviderError:
+                    venue = None
+            if venue is None:
                 findings.append(
                     Discrepancy(
                         pair=pair, kind="missing_on_exchange",
