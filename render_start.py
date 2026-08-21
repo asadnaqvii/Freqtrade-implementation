@@ -537,6 +537,20 @@ def _record_signals(client, bot_id, owner_id) -> int:
     from app.validation import signals
 
     bot = _local_bot_client()
+
+    # This loop starts before freqtrade does -- registration runs first, and the
+    # API server comes up seconds later. Without a wait the first pass after
+    # every deploy reads nothing and the next one is fifteen minutes away, which
+    # on a day of frequent deploys is most of the day.
+    for _ in range(60):
+        try:
+            bot.get("ping")
+            break
+        except Exception:  # noqa: BLE001 - not up yet
+            time.sleep(2)
+    else:
+        return 0
+
     whitelist = (bot.get("whitelist") or {}).get("whitelist") or []
     if not whitelist:
         return 0
