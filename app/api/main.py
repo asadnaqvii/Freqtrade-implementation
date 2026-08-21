@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     from app.api.routers import (
-        accounts, backtests, bots, catalog, health, live, strategies,
+        accounts, backtests, bots, catalog, health, live, strategies, verification,
     )
 
     app.include_router(health.router)
@@ -95,6 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts.router)
     app.include_router(bots.router)
     app.include_router(live.router)
+    app.include_router(verification.router)
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

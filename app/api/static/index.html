@@ -657,6 +657,30 @@
       <div id="verify-checks"></div>
     </div>
 
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Strategy &rarr; bot &rarr; exchange</h2>
+        <span style="flex:1"></span>
+        <select id="chain-days" style="width:auto">
+          <option value="1">Last day</option>
+          <option value="7" selected>Last 7 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
+      </div>
+      <p class="hint">The same intent, three times over. What the strategy computed, what the
+        bot instructed, and what the exchange says happened. Each arrow can break, and each
+        break means something different &mdash; a signal with no order is the bot unable to
+        act, an order the exchange disputes is the bot's record being wrong.</p>
+      <div class="kpis" id="chain-kpis" style="margin-bottom:12px"></div>
+      <div class="scroll"><table><thead><tr>
+        <th>Bar</th><th>Pair</th><th>Side</th>
+        <th>Strategy said</th><th>Bot did</th><th>Exchange says</th><th>Reading</th>
+      </tr></thead><tbody id="chain-rows">
+        <tr><td colspan="7" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+      <p class="hint" id="chain-note" style="margin:10px 0 0"></p>
+    </div>
+
     <div class="card" id="recon-card">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <h2 style="margin:0">Past trades, checked against the exchange</h2>
@@ -1486,6 +1510,7 @@ async function loadWallets() {
     reconAccountId = accounts[0].id;
     loadReconciliation(reconAccountId).catch(() => {});
   }
+  loadChain().catch(() => {});
 
   document.querySelectorAll("[data-verify]").forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = "Checking…";
@@ -1524,6 +1549,62 @@ function showVerification(out) {
   $("verify-out").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+// The three records, lined up. Colour is by what the row means, not by which
+// column is populated: "the bot could not act" and "the exchange disagrees" are
+// different problems and must not read the same.
+const CHAIN_LOOK = {
+  confirmed:            ["ok",      "Strategy signalled, bot acted, exchange agrees."],
+  acted_unverified:     ["neutral", "Bot acted; the exchange check has not covered it yet."],
+  signal_not_acted:     ["warn",    "Strategy signalled and no order followed — no free slot, not enough stake, the pair was locked, or the bot was down."],
+  exchange_disagrees:   ["bad",     "The exchange does not confirm the bot's record of this order."],
+  order_without_signal: ["info",    "An order with no signal behind it — a force exit, a stoploss, or something this page cannot account for."],
+};
+
+async function loadChain() {
+  const days = Number($("chain-days").value || 7);
+  try {
+    const d = await api(`/api/verification/chain?days=${days}`);
+    const c = d.counts || {};
+    $("chain-kpis").innerHTML = [
+      ["Confirmed", c.confirmed ?? 0, "all three agree"],
+      ["Not acted on", c.signal_not_acted ?? 0, "strategy signalled, no order"],
+      ["Disputed", c.exchange_disagrees ?? 0, "exchange disagrees"],
+      ["Unaccounted", c.order_without_signal ?? 0, "order with no signal"],
+    ].map(([k, v, sub]) => `<div class="kpi"><div class="k">${esc(k)}</div>
+        <div class="v ${v ? (k === "Confirmed" ? "pos" : k === "Not acted on" ? "" : "neg") : ""}">${v}</div>
+        <div class="s">${esc(sub)}</div></div>`).join("");
+
+    const rows = d.rows || [];
+    $("chain-rows").innerHTML = rows.length ? rows.map(r => {
+      const [cls, reading] = CHAIN_LOOK[r.outcome] || ["neutral", r.outcome];
+      const o = r.order, x = r.exchange;
+      return `<tr>
+        <td class="muted">${shortDate(r.bar_time)}</td>
+        <td><strong>${esc(r.pair)}</strong></td>
+        <td class="muted">${esc((r.side || "").replace("_", " "))}</td>
+        <td class="num">${r.signal_price == null ? '<span class="muted">—</span>'
+                                                 : fmtNum(r.signal_price, 6)}</td>
+        <td class="num">${o ? fmtNum(o.average ?? o.price, 6) : '<span class="muted">no order</span>'}</td>
+        <td>${x ? `<span class="pill ${x.matched ? "ok" : "bad"}">${x.matched ? "agrees" : esc(x.discrepancy_kind || "disputed")}</span>`
+                : '<span class="muted">not checked</span>'}</td>
+        <td><span class="pill ${cls}">${esc(r.outcome.replaceAll("_", " "))}</span></td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="7" class="empty">${esc(d.note || "Nothing in this window")}</td></tr>`;
+
+    $("chain-note").textContent = d.note
+      || `${rows.length} events over ${d.days} days, from ${d.signals_recorded} recorded signals. `
+         + "Hover a row's reading for what it means.";
+    document.querySelectorAll("#chain-rows .pill").forEach(pill => {
+      const row = rows[[...pill.closest("tbody").rows].indexOf(pill.closest("tr"))];
+      if (row) pill.title = (CHAIN_LOOK[row.outcome] || [, ""])[1];
+    });
+  } catch (e) {
+    $("chain-rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+$("chain-days").onchange = () => loadChain().catch(() => {});
+
 // Verification runs on the bot, so the button leaves a request and then watches
 // for a result newer than the one already on screen.
 $("verify-now").onclick = async () => {
@@ -1540,6 +1621,7 @@ $("verify-now").onclick = async () => {
       await new Promise(done => setTimeout(done, 3000));
       b.textContent = `Waiting… ${(i + 1) * 3}s`;
       await loadReconciliation(account).catch(() => {});
+      await loadChain().catch(() => {});
       if (latestValidationAt && latestValidationAt !== before) {
         $("verify-status").textContent =
           `Checked ${shortDate(latestValidationAt)} by ${esc(r.bot || "the bot")}.`;

@@ -521,6 +521,43 @@ def _verify_requested(client, bot_id, state) -> bool:
     return True
 
 
+def _local_bot_client():
+    """A client for this bot's own REST API, over the loopback interface."""
+    from app.bot_api import BotClient
+
+    return BotClient(
+        f"http://127.0.0.1:{port}",
+        config["api_server"]["username"],
+        config["api_server"]["password"],
+    )
+
+
+def _record_signals(client, bot_id, owner_id) -> int:
+    """Store this strategy's entry and exit signals for the watched pairs."""
+    from app.validation import signals
+
+    bot = _local_bot_client()
+    whitelist = (bot.get("whitelist") or {}).get("whitelist") or []
+    if not whitelist:
+        return 0
+    # The strategy owns the timeframe, not this config -- TrendPullbackStrategy
+    # runs on 4h and nothing here says so. Ask the bot what it resolved to
+    # rather than keeping a second copy that can disagree.
+    timeframe = (bot.get("show_config") or {}).get("timeframe")
+    if not timeframe:
+        return 0
+    return signals.record(
+        client, bot=bot,
+        # The pairs it is actually watching, capped: this is one request each
+        # and the point is the pairs it might trade, not every pair on earth.
+        pairs=whitelist[:25],
+        timeframe=timeframe,
+        owner_id=owner_id,
+        bot_instance_id=bot_id,
+        exchange=exchange_name,
+    )
+
+
 def _stamp_verify_ran(client, bot_id) -> None:
     """Record that a check completed, so the page can tell fresh from stale."""
     if not bot_id:
@@ -568,6 +605,17 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
             # Reconciliation asks the venue what it actually did with the orders
             # this bot recorded. Hourly rather than every cycle: it is a request
             # per traded pair, and the answer moves at the speed of trading.
+            # What the strategy said, recorded before anything could get in the
+            # way. Read from this bot's own API over the loopback: the analysed
+            # dataframe lives in the freqtrade process, not in this thread, and
+            # its own REST interface is the supported way to reach it.
+            try:
+                stored = _record_signals(client, bot_id, owner_id)
+                if stored:
+                    print(f"signals: recorded {stored}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"could not record signals: {exc}", flush=True)
+
             nonlocal_state["ticks"] += 1
             if nonlocal_state["ticks"] % RECONCILE_EVERY_N_CHECKS == 1:
                 matched = selfcheck.reconcile(
