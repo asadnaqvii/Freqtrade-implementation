@@ -521,6 +521,65 @@ def _verify_requested(client, bot_id, state) -> bool:
     return True
 
 
+def _strategy_sha() -> str | None:
+    """sha256 of the strategy file this bot is about to run.
+
+    The name alone cannot tell an edit from a rename: a strategy iterated on in
+    place keeps its class name, so two months of trades can carry one label and
+    be materially different code.
+    """
+    import hashlib
+    from pathlib import Path
+
+    for base in ("strategies", "user_data/strategies"):
+        path = Path(base) / f"{strategy}.py"
+        if path.exists():
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+    return None
+
+
+def _record_deployment(client, bot_id, owner_id) -> None:
+    """Open a deployment row, closing the previous one if this is a change.
+
+    One open row per bot, enforced by a partial unique index. Rotating rather
+    than overwriting is what makes the history usable: anything timestamped --
+    trades, signals, drawdown -- can be attributed by asking which deployment
+    covered that moment.
+    """
+    if not bot_id:
+        return
+    try:
+        sha = _strategy_sha()
+        open_rows = client.select(
+            "strategy_deployments", columns="id,strategy,source_sha",
+            filters={"bot_instance_id": f"eq.{bot_id}", "ended_at": "is.null"},
+            limit=1,
+        )
+        current = open_rows[0] if open_rows else None
+        if current and current.get("strategy") == strategy and current.get("source_sha") == sha:
+            return                              # same code, still running
+
+        if current:
+            client.update("strategy_deployments",
+                          {"ended_at": datetime.now(timezone.utc).isoformat()},
+                          filters={"id": f"eq.{current['id']}"})
+            what = "edited" if current.get("strategy") == strategy else "replaced"
+            print(f"strategy {what}: {current.get('strategy')} -> {strategy}", flush=True)
+
+        client.insert("strategy_deployments", {
+            "owner_id": owner_id,
+            "bot_instance_id": bot_id,
+            "strategy": strategy,
+            "source_sha": sha,
+            "stake_amount": config["stake_amount"],
+            "max_open_trades": config["max_open_trades"],
+            "trading_mode": "dry_run" if dry_run else "live",
+        })
+        print(f"deployment recorded: {strategy} ({(sha or '')[:12]})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - attribution must never stop trading
+        print(f"could not record the deployment: {exc}", flush=True)
+
+
 def _local_bot_client():
     """A client for this bot's own REST API, over the loopback interface."""
     from app.bot_api import BotClient
@@ -619,6 +678,20 @@ def _selfcheck_loop(client, account, bot_id, owner_id):
             # Reconciliation asks the venue what it actually did with the orders
             # this bot recorded. Hourly rather than every cycle: it is a request
             # per traded pair, and the answer moves at the speed of trading.
+            # Copy closed trades somewhere freqtrade cannot reset. ft_main is
+            # its working store, not a record: the cutover cleared it, and the
+            # only reason nothing was lost is that nothing had been archived
+            # since the Railway import anyway.
+            try:
+                from app.validation import archive
+
+                moved = archive.sync(client, bot_instance_id=bot_id, owner_id=owner_id,
+                                     trading_mode="dry_run" if dry_run else "live")
+                if moved:
+                    print(f"archive: {moved} closed trade(s) stored", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"could not archive trades: {exc}", flush=True)
+
             # What the strategy said, recorded before anything could get in the
             # way. Read from this bot's own API over the loopback: the analysed
             # dataframe lives in the freqtrade process, not in this thread, and
@@ -718,6 +791,8 @@ def register_and_heartbeat():
         print(f"registered bot instance {bot_id}", flush=True)
     except Exception as exc:
         print(f"could not register this bot: {exc}", flush=True)
+
+    _record_deployment(client, bot_id, owner_id)
 
     account = _link_account(client, bot_id, owner_id) if bot_id and owner_id else None
     if account:

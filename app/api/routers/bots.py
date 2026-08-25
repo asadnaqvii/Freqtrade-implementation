@@ -182,7 +182,8 @@ async def history_breakdown(db: UserDB, period: str = "day", limit: int = 400) -
 
 
 #: What a performance view can group by, and where that value lives on a trade.
-PERFORMANCE_KEYS = {"pair": "pair", "enter_tag": "enter_tag", "exit_reason": "exit_reason"}
+PERFORMANCE_KEYS = {"pair": "pair", "enter_tag": "enter_tag",
+                    "exit_reason": "exit_reason", "strategy": "strategy"}
 
 
 @router.get("/history/performance")
@@ -230,6 +231,46 @@ async def history_performance(db: UserDB, by: str = "pair", limit: int = 100) ->
         r["profit_pct"] = round(r["profit_abs"] / r["staked"] * 100, 4) if r["staked"] else None
         r["win_rate"] = round(r["wins"] / r["count"] * 100, 2) if r["count"] else None
     return {"by": by, "rows": rows[:limit], "total_groups": len(rows)}
+
+
+@router.get("/history/strategies")
+async def strategy_history(db: UserDB) -> dict:
+    """Which strategy ran when, and what it did while it ran.
+
+    freqtrade stamps every trade with a strategy name, which is most of the
+    answer. It cannot tell an edit from a rename -- a strategy iterated on in
+    place keeps its class name -- so the deployment rows carry a fingerprint of
+    the source, and a strategy that changed without changing its name shows up
+    as two deployments rather than one long undifferentiated run.
+
+    Declared before /{bot_id}/trades, which would match `history` as a bot id.
+    """
+    try:
+        deployments = db.select("strategy_deployments", columns="*",
+                                order="started_at.desc", limit=200)
+    except Exception as exc:  # noqa: BLE001 - new table; an old deploy has none
+        log.info("no deployment history yet: %s", exc)
+        deployments = []
+
+    trades = [t for t in _merged_trades(db)
+              if not t.get("is_open") and t.get("close_profit_abs") is not None]
+
+    for row in deployments:
+        started, ended = row.get("started_at"), row.get("ended_at")
+        window = [t for t in trades
+                  if str(t.get("open_date") or "") >= str(started)
+                  and (not ended or str(t.get("open_date") or "") < str(ended))]
+        profits = [float(t["close_profit_abs"]) for t in window]
+        wins = [p for p in profits if p > 0]
+        row["trades"] = len(window)
+        row["profit_abs"] = round(sum(profits), 8) if profits else 0.0
+        row["win_rate"] = round(len(wins) / len(profits) * 100, 2) if profits else None
+        # The stamp on the trades themselves. Where this disagrees with the
+        # deployment, a trade outlived a strategy change or something is wrong,
+        # and either is worth seeing rather than averaging away.
+        row["stamped"] = sorted({str(t.get("strategy")) for t in window if t.get("strategy")})
+
+    return {"deployments": deployments}
 
 
 @router.get("/history/equity")

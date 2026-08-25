@@ -847,6 +847,7 @@
             <span class="spacer" style="flex:1"></span>
     <div class="chips" id="perf-tabs">
               <button class="btn tiny active" data-perf="pair">By pair</button>
+              <button class="btn tiny" data-perf="strategy">By strategy</button>
               <button class="btn tiny" data-perf="enter_tag">By entry tag</button>
               <button class="btn tiny" data-perf="exit_reason">By exit reason</button>
             </div>
@@ -886,6 +887,21 @@
             <tr><td colspan="15" class="empty">No trades</td></tr>
           </tbody></table></div>
           <p class="hint" id="trade-hist-count" style="margin:10px 0 0"></p>
+        </div>
+
+        <div class="card">
+          <h2>Strategies that have run</h2>
+          <p class="hint">Which strategy was live, on which bot, between when and when. A
+            strategy edited without being renamed shows as two entries &mdash; the source
+            fingerprint differs even when the name does not, and the trade stamps alone
+            cannot see that.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Strategy</th><th>Mode</th><th>From</th><th>To</th>
+            <th class="r">Trades</th><th class="r">Profit</th><th class="r">Win rate</th>
+            <th>Source</th>
+          </tr></thead><tbody id="deployment-rows">
+            <tr><td colspan="8" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
         </div>
 
         <div class="card">
@@ -1672,6 +1688,33 @@ const heldBetween = (a, b) => {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 };
 
+async function loadDeployments() {
+  try {
+    const { deployments } = await api("/api/bots/history/strategies");
+    const rows = deployments || [];
+    $("deployment-rows").innerHTML = rows.length ? rows.map(d => {
+      const p = Number(d.profit_abs) || 0;
+      // The trade stamps and the deployment window should name the same
+      // strategy. Where they do not, say so rather than quietly picking one.
+      const odd = (d.stamped || []).filter(x => x && x !== d.strategy);
+      return `<tr>
+        <td><strong>${esc(d.strategy)}</strong>${odd.length
+            ? ` <span class="pill warn" title="Trades in this window are stamped ${esc(odd.join(", "))}">mixed stamps</span>` : ""}</td>
+        <td><span class="pill ${d.trading_mode === "live" ? "info" : "neutral"}">${esc(d.trading_mode || "—")}</span></td>
+        <td class="muted">${shortDate(d.started_at)}</td>
+        <td class="muted">${d.ended_at ? shortDate(d.ended_at) : '<span class="pill ok">running</span>'}</td>
+        <td class="r num">${d.trades ?? 0}</td>
+        <td class="r num">${d.trades ? signed(p, (p >= 0 ? "+" : "") + fmtNum(p)) : "—"}</td>
+        <td class="r num">${d.win_rate == null ? "—" : fmtNum(d.win_rate, 1) + "%"}</td>
+        <td class="muted mono" style="font-size:11px">${esc((d.source_sha || "—").slice(0, 12))}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="8" class="empty">No deployments recorded yet</td></tr>';
+  } catch (e) {
+    $("deployment-rows").innerHTML =
+      `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
 async function loadStoredTrades() {
   const { trades, counts, totals, profit_factor, expectancy, best } =
     await api("/api/bots/history");
@@ -2043,6 +2086,7 @@ const PERF_LABEL = {
   pair:        ["Pair", "Which pairs actually made money, across the whole history."],
   enter_tag:   ["Entry tag", "Which entry conditions paid off, across the whole history."],
   exit_reason: ["Exit reason", "How positions ended, across the whole history."],
+  strategy:    ["Strategy", "Which strategy earned what. Trades are stamped by the bot that made them, so this holds across redeploys and strategy changes."],
 };
 
 async function loadPerformance(stake = "") {
@@ -2205,6 +2249,7 @@ async function loadLiveExtras(stake) {
     slowRefreshAt = Date.now();
     loadCandles().catch(() => {});
     loadStoredTrades().catch(() => {});
+    loadDeployments().catch(() => {});
   }
 
   try {
