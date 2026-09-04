@@ -45,6 +45,22 @@ STALL_SWEEP_SECONDS = 120
 #: it goes quiet is the one that reports it rather than the one after that.
 BOT_WATCH_SECONDS = 60
 
+#: Longest the queue poll backs off to while nothing is queued. The poll ran at
+#: a flat 10s and made 128,897 `claim_backtest_job` calls in sixteen days --
+#: 465 seconds of database CPU and 773k buffer reads, essentially all of it
+#: asking an empty queue whether it was still empty. On a Micro instance that
+#: contends with the trading bot for the same CPU and disk, so an idle worker
+#: now goes quiet and wakes up promptly the moment there is work.
+IDLE_MAX_POLL_SECONDS = 60
+
+#: How often to trim the audit log, and how much of it to keep. Before migration
+#: 0020 the audit trigger recorded every heartbeat, and security_events reached
+#: 70 MB of a 100 MB database with nobody watching. The trigger no longer writes
+#: those, but an audit log with no retention only ever grows, so trim it here.
+LOG_PRUNE_SECONDS = 6 * 60 * 60
+LOG_KEEP_DAYS = 90
+
+
 #: How quiet a running job must go before it is considered abandoned. The
 #: database default is twenty minutes, which is fine for a crash and far too
 #: slow for a deploy: a redeploy orphans whatever the old worker was holding,
@@ -453,12 +469,26 @@ def run_forever() -> None:
         except Exception as exc:  # noqa: BLE001 - never take the worker down for this
             log.warning("bot watchdog failed: %s", exc)
 
+    def prune_logs() -> None:
+        """Trim the audit log to its retention window."""
+        try:
+            removed = client.rpc("prune_security_events",
+                                 {"p_keep_days": LOG_KEEP_DAYS})
+            if removed:
+                log.info("pruned %s expired security event(s)", removed)
+        except Exception as exc:  # noqa: BLE001 - housekeeping is never fatal
+            log.warning("could not prune security events: %s", exc)
+
     sweep_stalled()
     sweep_bots()
+    prune_logs()
     last_sweep = time.monotonic()
     last_watch = time.monotonic()
+    last_prune = time.monotonic()
 
     idle_logged = False
+    base_poll = max(int(settings.worker.poll_interval_seconds), 1)
+    idle_poll = base_poll
     while not _stopping.is_set():
         if time.monotonic() - last_sweep >= STALL_SWEEP_SECONDS:
             sweep_stalled()
@@ -468,21 +498,32 @@ def run_forever() -> None:
             sweep_bots()
             last_watch = time.monotonic()
 
+        if time.monotonic() - last_prune >= LOG_PRUNE_SECONDS:
+            prune_logs()
+            last_prune = time.monotonic()
+
         try:
             job = client.rpc("claim_backtest_job", {"p_worker": worker_name})
         except Exception as exc:
             log.error("could not claim a job: %s", exc)
-            _stopping.wait(settings.worker.poll_interval_seconds)
+            _stopping.wait(idle_poll)
+            idle_poll = min(idle_poll * 2, IDLE_MAX_POLL_SECONDS)
             continue
 
         if not job or not job.get("id"):
             if not idle_logged:
-                log.info("queue empty; waiting")
+                log.info("queue empty; backing off to %ss between checks",
+                         IDLE_MAX_POLL_SECONDS)
                 idle_logged = True
-            _stopping.wait(settings.worker.poll_interval_seconds)
+            _stopping.wait(idle_poll)
+            # Back off while the queue stays empty. Doubling rather than jumping
+            # straight to the ceiling keeps a job queued moments after the last
+            # one finished from waiting the full interval.
+            idle_poll = min(idle_poll * 2, IDLE_MAX_POLL_SECONDS)
             continue
 
         idle_logged = False
+        idle_poll = base_poll
         log.info("claimed job %s (%s); memory %s/%s MB", job["id"],
                  job.get("builtin_strategy") or "builder strategy",
                  memory_used_mb(), memory_limit_mb())

@@ -143,9 +143,12 @@ def sweep(client, *, webhook_url: str | None = None) -> int:
     troubled = 0
     for bot in bots:
         # A bot that has never checked in was never deployed; that is not an
-        # outage, and paging about it on every sweep forever helps nobody.
+        # outage, and paging about it on every sweep forever helps nobody. A
+        # retired one was switched off on purpose -- the Railway instance at
+        # cutover -- and its row is kept only so its trade history still
+        # resolves. Neither is a machine anybody wants waking them at 4am.
         health = bot.get("health")
-        if health == "never_seen":
+        if health in ("never_seen", "retired"):
             continue
 
         # A bot somebody deliberately stopped is not an outage. Paging on it

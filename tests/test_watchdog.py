@@ -129,6 +129,16 @@ def test_a_bot_that_never_ran_is_not_an_outage(no_real_webhooks):
     assert watchdog.sweep(c) == 0
 
 
+def test_a_retired_bot_is_not_an_outage(no_real_webhooks):
+    """The Railway instance was switched off on purpose at cutover. Its row is
+    kept so its trade history still resolves, and it must never page again --
+    an alert about a machine you decided to turn off is how a channel gets
+    muted."""
+    c = Client(bots=[bot(health="retired", desired_state=None)])
+    assert watchdog.sweep(c) == 0
+    assert c.inserted == []
+
+
 def test_one_outage_opens_one_incident(no_real_webhooks):
     """Every sweep while it is down must not add a row; a ten-minute outage is
     one failure, not forty."""

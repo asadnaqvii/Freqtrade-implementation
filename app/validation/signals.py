@@ -125,6 +125,13 @@ def record(client, *, bot, pairs: Iterable[str], timeframe: str,
     Best effort per pair: one unreadable pair must not cost the others. Written
     with on_conflict so re-reading an overlapping window is a no-op rather than
     a duplicate -- which is what makes it safe to call on every check.
+
+    That is a no-op logically, not physically: ON CONFLICT DO UPDATE rewrites
+    the row whether or not a value differs, and re-reading the same window every
+    check turned 730 distinct signals into 81,103 row rewrites. A
+    suppress_redundant_updates_trigger on the table (migration 0021) drops the
+    write when the incoming row is identical, so leave the payload here
+    deterministic -- stamping a capture time onto it would defeat that.
     """
     stored = 0
     for pair in pairs:
