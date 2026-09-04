@@ -61,6 +61,7 @@ def index_of(routes, path, method="GET"):
         ("/api/bots/history/performance", "/api/bots/{bot_id}/trades"),
         ("/api/bots/history/equity", "/api/bots/{bot_id}/trades"),
         ("/api/bots/history/strategies", "/api/bots/{bot_id}/trades"),
+        ("/api/bots/incidents", "/api/bots/{bot_id}/trades"),
     ],
 )
 def test_literal_routes_are_not_shadowed(routes, literal, parameterised):

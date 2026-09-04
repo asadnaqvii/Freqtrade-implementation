@@ -40,6 +40,11 @@ _stopping = threading.Event()
 #: sweep rather than depending on a restart happening to land at the right time.
 STALL_SWEEP_SECONDS = 120
 
+#: How often to check whether the trading bot is still alive. Shorter than the
+#: five minutes v_bot_health uses to call a bot stale, so the first sweep after
+#: it goes quiet is the one that reports it rather than the one after that.
+BOT_WATCH_SECONDS = 60
+
 #: How quiet a running job must go before it is considered abandoned. The
 #: database default is twenty minutes, which is fine for a crash and far too
 #: slow for a deploy: a redeploy orphans whatever the old worker was holding,
@@ -433,14 +438,35 @@ def run_forever() -> None:
         except Exception as exc:
             log.warning("could not requeue stalled jobs: %s", exc)
 
+    def sweep_bots() -> None:
+        """Notice the trading bot going quiet, and say so.
+
+        Runs here rather than in the bot because a watchdog inside the process
+        it watches is gone at the one moment it matters. The worker is a
+        separate always-on service, so it is still around when the bot is what
+        died.
+        """
+        try:
+            from app.worker import watchdog
+
+            watchdog.sweep(client, webhook_url=settings.worker.alert_webhook_url)
+        except Exception as exc:  # noqa: BLE001 - never take the worker down for this
+            log.warning("bot watchdog failed: %s", exc)
+
     sweep_stalled()
+    sweep_bots()
     last_sweep = time.monotonic()
+    last_watch = time.monotonic()
 
     idle_logged = False
     while not _stopping.is_set():
         if time.monotonic() - last_sweep >= STALL_SWEEP_SECONDS:
             sweep_stalled()
             last_sweep = time.monotonic()
+
+        if time.monotonic() - last_watch >= BOT_WATCH_SECONDS:
+            sweep_bots()
+            last_watch = time.monotonic()
 
         try:
             job = client.rpc("claim_backtest_job", {"p_worker": worker_name})

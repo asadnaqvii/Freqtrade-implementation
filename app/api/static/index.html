@@ -706,6 +706,8 @@
 
   <!-- ── Live bot ──────────────────────────────────────────── -->
   <section id="bots">
+    <div class="card" id="incident-banner" hidden></div>
+
     <div class="card" id="live-down" hidden>
       <h2>Bot unreachable</h2>
       <p class="hint" id="live-down-why"></p>
@@ -887,6 +889,19 @@
             <tr><td colspan="15" class="empty">No trades</td></tr>
           </tbody></table></div>
           <p class="hint" id="trade-hist-count" style="margin:10px 0 0"></p>
+        </div>
+
+        <div class="card">
+          <h2>Outages</h2>
+          <p class="hint">Every time the bot stopped answering, and for how long. The worker
+            watches for this from outside &mdash; a watchdog inside the bot is gone at the one
+            moment it matters.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>What</th><th>Started</th><th>Recovered</th><th class="r">Down for</th>
+            <th>Alerted</th><th>Detail</th>
+          </tr></thead><tbody id="incident-rows">
+            <tr><td colspan="6" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
         </div>
 
         <div class="card">
@@ -1688,6 +1703,56 @@ const heldBetween = (a, b) => {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 };
 
+const INCIDENT_LOOK = {
+  offline:     ["bad",  "No heartbeat — the process was gone."],
+  stale:       ["warn", "Heartbeats stopped briefly. Usually a redeploy."],
+  not_trading: ["bad",  "Up and answering, but not trading — no stop-loss was being managed."],
+};
+
+const forDuration = (s) => s == null ? "—"
+  : s < 90 ? `${s}s`
+  : s < 5400 ? `${Math.round(s / 60)}m`
+  : `${(s / 3600).toFixed(1)}h`;
+
+async function loadIncidents() {
+  try {
+    const d = await api("/api/bots/incidents");
+    const rows = d.incidents || [], open = d.open || [];
+
+    // Unresolved outages go at the top of the Live tab, not buried in a table.
+    const banner = $("incident-banner");
+    if (open.length) {
+      banner.hidden = false;
+      banner.innerHTML = `<h2 class="neg">Bot is not trading</h2>` + open.map(i => {
+        const [, meaning] = INCIDENT_LOOK[i.kind] || ["", i.kind];
+        return `<p class="hint" style="margin:0 0 6px">
+          <strong>${esc(i.kind.replaceAll("_", " "))}</strong> since ${shortDate(i.opened_at)}
+          &mdash; ${esc(meaning)} ${esc(i.detail || "")}</p>`;
+      }).join("");
+    } else {
+      banner.hidden = true;
+    }
+
+    $("incident-rows").innerHTML = rows.length ? rows.map(i => {
+      const [cls, meaning] = INCIDENT_LOOK[i.kind] || ["neutral", i.kind];
+      return `<tr>
+        <td><span class="pill ${cls}" title="${esc(meaning)}">${esc(i.kind.replaceAll("_", " "))}</span></td>
+        <td class="muted">${shortDate(i.opened_at)}</td>
+        <td class="muted">${i.resolved_at ? shortDate(i.resolved_at)
+                                          : '<span class="pill bad">ongoing</span>'}</td>
+        <td class="r num">${forDuration(i.downtime_seconds)}</td>
+        <td>${i.notified ? '<span class="pill ok">sent</span>'
+            : i.notify_error ? `<span class="pill warn" title="${esc(i.notify_error)}">not sent</span>`
+            : '<span class="muted">—</span>'}</td>
+        <td class="muted">${esc(i.detail || "—")}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="6" class="empty">No outages recorded</td></tr>';
+  } catch (e) {
+    $("incident-rows").innerHTML =
+      `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
 async function loadDeployments() {
   try {
     const { deployments } = await api("/api/bots/history/strategies");
@@ -2250,6 +2315,7 @@ async function loadLiveExtras(stake) {
     loadCandles().catch(() => {});
     loadStoredTrades().catch(() => {});
     loadDeployments().catch(() => {});
+    loadIncidents().catch(() => {});
   }
 
   try {

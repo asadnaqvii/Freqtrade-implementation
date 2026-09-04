@@ -118,6 +118,11 @@ class WorkerConfig:
     heartbeat_seconds: int
     job_timeout_seconds: int
     max_download_days: int
+    #: Where to push a "the bot has stopped" alert. Any endpoint that accepts a
+    #: JSON POST works -- Slack, Discord, ntfy, a Telegram sendMessage url --
+    #: so choosing a channel is configuration rather than a code change.
+    #: Unset means incidents are still recorded, just not pushed.
+    alert_webhook_url: str | None
 
 
 @dataclass(frozen=True)
@@ -288,6 +293,7 @@ def get_settings() -> Settings:
         heartbeat_seconds=_env_int("WORKER_HEARTBEAT_SECONDS", 30),
         job_timeout_seconds=_env_int("WORKER_JOB_TIMEOUT_SECONDS", 3600),
         max_download_days=_env_int("BACKTEST_MAX_DOWNLOAD_DAYS", 1825),
+        alert_webhook_url=_env("ALERT_WEBHOOK_URL") or None,
     )
 
     origins = _env("CORS_ORIGINS", "")

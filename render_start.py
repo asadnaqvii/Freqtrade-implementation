@@ -829,11 +829,25 @@ def register_and_heartbeat():
             time.sleep(60)
             if not bot_id:
                 return
+            # "running" used to be hardcoded, which made the column a statement
+            # that the process exists rather than that it is trading. A bot that
+            # is up, healthy and STOPPED manages no stop-loss on anything it
+            # holds, and every dashboard reading a heartbeat called that fine.
+            state = "running"
+            try:
+                config = _local_bot_client().get("show_config") or {}
+                reported = str(config.get("state") or "").lower()
+                if reported and reported != "running":
+                    state = reported
+            except Exception:
+                # The API not answering is itself worth recording: the process
+                # is alive enough to heartbeat and not alive enough to trade.
+                state = "unreachable"
             try:
                 client.update(
                     "bot_instances",
                     {"last_heartbeat_at": datetime.now(timezone.utc).isoformat(),
-                     "status": "running"},
+                     "status": state},
                     filters={"id": f"eq.{bot_id}"},
                 )
             except Exception:

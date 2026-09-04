@@ -273,6 +273,33 @@ async def strategy_history(db: UserDB) -> dict:
     return {"deployments": deployments}
 
 
+@router.get("/incidents")
+async def incidents(db: UserDB, limit: int = 50) -> dict:
+    """When the bot stopped, for how long, and whether anyone was told.
+
+    Declared before /{bot_id}/trades, which would match `incidents` as a bot id.
+    """
+    try:
+        rows = db.select("bot_incidents", columns="*",
+                         order="opened_at.desc", limit=min(limit, 200))
+    except Exception as exc:  # noqa: BLE001 - new table; an old deploy has none
+        log.info("no incident history yet: %s", exc)
+        rows = []
+    unresolved = [r for r in rows if not r.get("resolved_at")]
+    downtime = [int(r["downtime_seconds"]) for r in rows
+                if r.get("downtime_seconds") is not None]
+    return {
+        "incidents": rows,
+        "open": unresolved,
+        "counts": {
+            "total": len(rows),
+            "open": len(unresolved),
+            "worst_downtime_seconds": max(downtime) if downtime else None,
+            "total_downtime_seconds": sum(downtime) if downtime else 0,
+        },
+    }
+
+
 @router.get("/history/equity")
 async def history_equity(db: UserDB) -> dict:
     """Account value over time, reconstructed from realised profit.
