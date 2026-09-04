@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 # Schema name pattern, mirrored from the check in refresh_freqtrade_views().
 # Anything reaching a search_path or a format() must match this.
@@ -160,6 +160,46 @@ class Settings:
         return normalise_db_url(base)
 
 
+#: libpq TCP keepalive settings, attached to every Postgres URL we build.
+#:
+#: Supabase's pooler drops connections -- on its own maintenance, and on idle --
+#: and the bot noticed only when its next query failed with
+#: "SSL SYSCALL error: EOF detected", which freqtrade treats as fatal. Twice in
+#: ten days that killed the trading process.
+#:
+#: Keepalives make the kernel prove the connection is alive every 30 seconds
+#: rather than discovering it is dead at the worst moment, and give up after
+#: five failed probes so a genuinely dead socket surfaces in about a minute
+#: instead of hanging.
+KEEPALIVES = {
+    "keepalives": "1",
+    "keepalives_idle": "30",
+    "keepalives_interval": "10",
+    "keepalives_count": "5",
+}
+
+
+def with_keepalives(db_url: str) -> str:
+    """Add TCP keepalives to a Postgres URL, leaving any existing query intact.
+
+    Appended as raw text rather than re-encoded. Round-tripping the query
+    through urlencode rewrites `%20` as `+`, and libpq does not read `+` as a
+    space -- that is an HTML form convention, not part of RFC 3986. The
+    search_path option would arrive as `-c+search_path=...`, which the server
+    rejects, and the bot would then write freqtrade's tables into whatever
+    schema it defaulted to. Existing keys are left untouched.
+    """
+    parts = urlparse(db_url)
+    if not parts.scheme.startswith("postgres"):
+        return db_url
+    present = {key for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
+    additions = [f"{k}={v}" for k, v in KEEPALIVES.items() if k not in present]
+    if not additions:
+        return db_url
+    query = "&".join(filter(None, [parts.query, *additions]))
+    return urlunparse(parts._replace(query=query))
+
+
 def normalise_db_url(db_url: str) -> str:
     """Force an explicit driver so SQLAlchemy cannot pick a different one.
 
@@ -173,7 +213,7 @@ def normalise_db_url(db_url: str) -> str:
     scheme = parts.scheme
     if scheme in {"postgres", "postgresql"}:
         scheme = "postgresql+psycopg2"
-    return urlunparse(parts._replace(scheme=scheme))
+    return with_keepalives(urlunparse(parts._replace(scheme=scheme)))
 
 
 def with_search_path(db_url: str, schema: str) -> str:
@@ -201,11 +241,13 @@ def with_search_path(db_url: str, schema: str) -> str:
     query = parts.query
     if "options=" in query:
         # Caller already pinned a search_path; respect it rather than fighting.
-        return urlunparse(parts._replace(scheme=scheme))
+        return with_keepalives(urlunparse(parts._replace(scheme=scheme)))
 
     encoded = f"options={quote(options, safe='')}"
     query = f"{query}&{encoded}" if query else encoded
-    return urlunparse(parts._replace(scheme=scheme, query=query))
+    # Keepalives matter here as much as on the default path: this url is what a
+    # long-lived trading process holds open for days.
+    return with_keepalives(urlunparse(parts._replace(scheme=scheme, query=query)))
 
 
 @lru_cache(maxsize=1)

@@ -395,3 +395,72 @@ def test_nothing_exits_on_the_normal_deploy_path():
     assert body.count("os._exit") == 1, "more than one exit path on startup"
     inner = body[body.index("def stand_down"):]
     assert "os._exit" in inner, "the only exit must be the takeover fallback"
+
+
+# ---------------------------------------------------------------------------
+# When the connection holding the lock dies
+# ---------------------------------------------------------------------------
+
+def test_losing_the_lock_connection_stops_this_process(monkeypatch, server):
+    """The failure on 2026-08-31, and why tolerating it was wrong.
+
+    Advisory locks live on the connection that took them. If that connection is
+    gone the lock is already released server-side -- and this process is still
+    trading, believing it holds it. Another instance can take the lock and open
+    a position on the same pair, which is precisely the duplicate-trade failure
+    this whole mechanism exists to prevent.
+
+    Retrying a few times is right; a dropped packet is not a lost lock. Retrying
+    forever is not.
+    """
+    ns = load_lock_module(monkeypatch, stub(server))
+    assert ns["acquire_trading_lock"]("postgresql://x/y", "bot") is True
+
+    conn = ns["_trading_lock_conn"]
+
+    def dead():
+        raise RuntimeError("SSL SYSCALL error: EOF detected")
+
+    conn.cursor = dead
+
+    yielded = []
+    ns["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+
+    import time as real_time
+
+    for _ in range(200):
+        if yielded:
+            break
+        real_time.sleep(0.02)
+
+    assert yielded, (
+        "a process whose lock connection is gone must stop, not keep trading "
+        "while another instance is free to take the lock"
+    )
+
+
+def test_a_single_dropped_query_does_not_stop_trading(monkeypatch, server):
+    """The other half: one bad packet is not a lost lock."""
+    ns = load_lock_module(monkeypatch, stub(server))
+    assert ns["acquire_trading_lock"]("postgresql://x/y", "bot") is True
+
+    conn = ns["_trading_lock_conn"]
+    real_cursor = conn.cursor
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection reset by peer")
+        return real_cursor()
+
+    conn.cursor = flaky
+
+    yielded = []
+    ns["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+
+    import time as real_time
+
+    real_time.sleep(0.3)
+    assert not yielded, "one transient error must not take a healthy bot down"
+    assert calls["n"] > 1, "it must keep polling after a transient error"

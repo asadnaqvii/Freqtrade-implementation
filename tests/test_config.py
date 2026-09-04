@@ -127,3 +127,44 @@ def test_search_path_can_still_be_forced_into_the_url(monkeypatch):
     url = get_settings().freqtrade_db_url
     get_settings.cache_clear()
     assert "search_path" in url
+
+
+# ---------------------------------------------------------------------------
+# Keepalives, and not breaking the search path while adding them
+# ---------------------------------------------------------------------------
+
+def test_a_postgres_url_gets_tcp_keepalives():
+    """Supabase's pooler drops connections and freqtrade treats the next failed
+    query as fatal. Keepalives make the kernel prove the socket is alive on a
+    schedule instead of discovering it is dead mid-session."""
+    url = normalise_db_url("postgresql://u:p@host:5432/postgres")
+    for part in ("keepalives=1", "keepalives_idle=30",
+                 "keepalives_interval=10", "keepalives_count=5"):
+        assert part in url, part
+
+
+def test_adding_keepalives_does_not_re_encode_the_search_path():
+    """The bug this nearly shipped.
+
+    Round-tripping the query through urlencode rewrites `%20` as `+`, and libpq
+    does not read `+` as a space -- that is an HTML form convention, not RFC
+    3986. The option would arrive as `-c+search_path=...`, the server would
+    reject it, and freqtrade's tables would land in whatever schema it fell
+    back to.
+    """
+    url = with_search_path("postgresql://u:p@host:5432/postgres", "ft_main")
+    assert "options=-c%20search_path%3Dft_main%2Cpublic" in url
+    assert "+search_path" not in url
+    assert "keepalives=1" in url
+
+
+def test_an_explicit_keepalive_setting_is_not_overridden():
+    url = normalise_db_url("postgresql://u:p@h/db?keepalives_idle=99")
+    assert "keepalives_idle=99" in url
+    assert "keepalives_idle=30" not in url
+
+
+def test_sqlite_is_left_alone():
+    """Keepalives are a TCP concept; a file has no socket to keep alive."""
+    assert normalise_db_url("sqlite:///user_data/tradesv3.sqlite") == \
+        "sqlite:///user_data/tradesv3.sqlite"

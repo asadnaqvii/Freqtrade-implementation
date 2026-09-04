@@ -338,15 +338,22 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
                         cur.execute("select pg_advisory_unlock(%s)", (wanted_key,))
                 failures = 0
             except Exception as exc:
-                # Giving up here is what made the service undeployable before:
-                # a watcher that has stopped watching never stands down, so
-                # every future deploy waits out the full timeout and fails. One
-                # dropped query is not a reason to stop.
+                # A dropped query here is not just a missed poll. Advisory locks
+                # live on the connection that took them, so if this connection
+                # is gone the lock is already released server-side -- and this
+                # process is still trading, believing it holds it. Another
+                # instance can now take it and open a position on the same pair,
+                # which is the duplicate-trade failure the lock exists to
+                # prevent. Observed 2026-08-31, when Supabase's pooler dropped
+                # every connection at once.
                 failures += 1
                 print(f"takeover watch failed ({failures}): {exc}", flush=True)
-                if failures >= 10:
-                    print("takeover watch giving up; this instance can no longer "
-                          "stand down for a deploy", flush=True)
+                if failures >= 3:
+                    print("TRADING LOCK CONNECTION LOST: the lock is released "
+                          "server-side while this process is still trading. "
+                          "Exiting so a replacement can take it cleanly.",
+                          flush=True)
+                    on_yield()
                     return
                 continue
             if not free:
@@ -949,6 +956,47 @@ if db_url:
             )
     except Exception as exc:
         print(f"WARNING: numpy adapter registration failed: {exc}", flush=True)
+
+def _make_the_db_connection_survivable() -> bool:
+    """Give freqtrade's engine a health check, since it does not build one.
+
+    freqtrade creates its engine as `create_engine(db_url, future=True)` and
+    only ever adds kwargs for sqlite, so a Postgres connection gets no
+    liveness check at all. Supabase's pooler drops connections -- on its own
+    maintenance, and on idle -- and the first query afterwards fails with
+    "SSL SYSCALL error: EOF detected". freqtrade logs "Fatal exception!" and
+    exits 1. That killed the live bot twice in ten days, mid-session, while it
+    was holding open positions.
+
+    pool_pre_ping makes SQLAlchemy check a pooled connection with a cheap
+    round trip before handing it out, and transparently replace a dead one. It
+    is the standard answer to exactly this, and there is no config option for
+    it, so it goes in here. Patched rather than vendored: freqtrade is a
+    dependency and this survives upgrading it.
+    """
+    try:
+        from freqtrade.persistence import models
+
+        original = models.create_engine
+
+        def create_engine(url, **kwargs):
+            kwargs.setdefault("pool_pre_ping", True)
+            # Recycle well inside the pooler's own idle timeout, so connections
+            # are replaced on our schedule rather than dropped on its.
+            kwargs.setdefault("pool_recycle", 900)
+            return original(url, **kwargs)
+
+        models.create_engine = create_engine
+        return True
+    except Exception as exc:  # noqa: BLE001 - better to trade without it than not at all
+        print(f"WARNING: could not enable pool_pre_ping ({exc}); a dropped database "
+              "connection will be fatal", flush=True)
+        return False
+
+
+if db_url:
+    if _make_the_db_connection_survivable():
+        print("database: pool_pre_ping on, connections recycled every 15m", flush=True)
 
 from freqtrade.main import main as freqtrade_main
 
