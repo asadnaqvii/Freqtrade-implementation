@@ -22,6 +22,14 @@ log = logging.getLogger(__name__)
 AMOUNT_TOLERANCE = 1e-8
 PRICE_TOLERANCE_PCT = 0.001  # 0.1%
 
+#: How recently an order can have been placed and still be excused for not
+#: appearing in the bot's records yet. The venue accepts an order before
+#: freqtrade commits its row, and a check landing in that gap reported a
+#: perfectly normal buy as a possible compromised key. Seen once, on
+#: PIEVERSE/USDT at 2026-08-28 01:19:14 -- nine seconds after the order was
+#: placed, and never again.
+JUST_PLACED_GRACE = timedelta(minutes=10)
+
 
 @dataclass
 class Discrepancy:
@@ -49,6 +57,37 @@ class Discrepancy:
         }
 
 
+def _as_utc(value: Any) -> datetime | None:
+    """Read one of freqtrade's order timestamps as an aware UTC datetime.
+
+    v_live_orders.order_date is `timestamp without time zone` and arrives over
+    PostgREST as a string. Freqtrade stores UTC in it, so a naive value is
+    labelled rather than converted -- guessing local time here would move the
+    history floor by hours.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None \
+        else moment.astimezone(timezone.utc)
+
+
+def _earliest(bot_orders: Iterable[dict[str, Any]]) -> datetime | None:
+    """The oldest order the bot has any record of."""
+    moments = [
+        moment for moment in (
+            _as_utc(order.get("order_date")) for order in bot_orders
+        ) if moment is not None
+    ]
+    return min(moments) if moments else None
+
+
 def _pct_diff(a: float | None, b: float | None) -> float | None:
     if a is None or b is None or a == 0:
         return None
@@ -60,10 +99,18 @@ def reconcile_orders(
     bot_orders: Iterable[dict[str, Any]],
     *,
     lookback_days: int = 30,
+    history_floor: datetime | None = None,
 ) -> list[Discrepancy]:
     """Match freqtrade's orders against the venue's, and report the gaps.
 
     `bot_orders` are rows shaped like public.v_live_orders.
+
+    `history_floor` is the point before which the bot cannot be expected to
+    know anything. The venue is queried `lookback_days` back, which for this
+    deployment reached nine days further than the bot's database had existed:
+    every order the Railway instance placed before the cutover came back as an
+    order "the bot has no record of ... a compromised key", 35 of them, every
+    fifteen minutes. Defaults to the earliest order the bot does know about.
     """
     by_pair: dict[str, list[dict[str, Any]]] = {}
     for order in bot_orders:
@@ -72,6 +119,10 @@ def reconcile_orders(
             by_pair.setdefault(pair, []).append(order)
 
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    # From by_pair rather than bot_orders: the parameter is an Iterable and
+    # has already been consumed once building it.
+    floor = history_floor if history_floor is not None else _earliest(
+        order for orders in by_pair.values() for order in orders)
     findings: list[Discrepancy] = []
 
     for pair, orders in by_pair.items():
@@ -135,6 +186,16 @@ def reconcile_orders(
 
         for order_id, venue in venue_by_id.items():
             if order_id in seen_ids:
+                continue
+            # Predates the bot's own records: it was never in a position to know
+            # about this one, so its absence says nothing. Reporting it anyway
+            # is how a real alert gets ignored.
+            if floor is not None and venue.timestamp is not None and venue.timestamp < floor:
+                continue
+            # Placed moments ago. The venue has it and freqtrade has not
+            # committed its row yet; that is a race, not a rogue order.
+            if venue.timestamp is not None and \
+                    venue.timestamp > datetime.now(timezone.utc) - JUST_PLACED_GRACE:
                 continue
             # An order the venue knows about that the bot does not is the more
             # alarming direction: something placed orders on this account.

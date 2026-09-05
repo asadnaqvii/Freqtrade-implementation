@@ -7,7 +7,7 @@ and an afternoon of rotating keys that were never the problem.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -266,6 +266,10 @@ def test_unknown_suite_name_is_rejected():
 # Reconciliation
 # ---------------------------------------------------------------------------
 
+def _ago(**kw):
+    return datetime.now(timezone.utc) - timedelta(**kw)
+
+
 def _order(order_id, **kw):
     defaults = dict(
         symbol="BTC/USDT", side="buy", status="closed", order_type="limit",
@@ -293,8 +297,78 @@ def test_partial_fill_recorded_as_complete_is_caught():
     assert any(f.kind == "amount" for f in findings)
 
 
+def test_orders_predating_the_bots_history_are_not_rogue_orders():
+    """The cutover boundary, which cried wolf every fifteen minutes.
+
+    The venue is queried thirty days back. This bot's database began on 20 Aug,
+    so the query reached nine days further back than the bot had existed, and
+    every order the retired Railway instance had placed came back as an order
+    "the bot has no record of ... a compromised key" -- 35 of them, forever.
+    An order placed before the bot kept records is not evidence of anything.
+    """
+    provider = FakeProvider(orders=[
+        _order("RAILWAY_ERA", timestamp=_ago(days=25)),
+        _order("OURS", timestamp=_ago(days=3)),
+    ])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "OURS",
+            "filled": 1.0, "average": 100.0, "status": "closed",
+            "order_date": (_ago(days=10)).replace(tzinfo=None).isoformat()}]
+    findings = reconcile_orders(provider, bot)
+    assert [f.exchange_order_id for f in findings if f.kind == "missing_in_bot"] == []
+
+
+def test_an_unknown_order_after_the_floor_is_still_flagged():
+    """The floor must not become a blanket excuse: inside the bot's own history
+    an order it did not place is exactly what this check exists to find."""
+    provider = FakeProvider(orders=[
+        _order("INTRUDER", timestamp=_ago(days=2)),
+        _order("OURS", timestamp=_ago(days=3)),
+    ])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "OURS",
+            "filled": 1.0, "average": 100.0, "status": "closed",
+            "order_date": (_ago(days=10)).replace(tzinfo=None).isoformat()}]
+    findings = reconcile_orders(provider, bot)
+    assert [f.exchange_order_id for f in findings
+            if f.kind == "missing_in_bot"] == ["INTRUDER"]
+
+
+def test_an_order_placed_seconds_ago_is_a_race_not_an_intruder():
+    """Seen on PIEVERSE/USDT at 2026-08-28 01:19:14, nine seconds after the
+    order was placed: the venue had accepted it and freqtrade had not yet
+    committed its row. Reported once as a possible compromised key, never
+    again."""
+    provider = FakeProvider(orders=[_order("JUST_PLACED", timestamp=_ago(seconds=9))])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "OTHER",
+            "filled": 1.0, "average": 100.0, "status": "closed",
+            "order_date": (_ago(days=10)).replace(tzinfo=None).isoformat()}]
+    findings = reconcile_orders(provider, bot)
+    assert not any(f.kind == "missing_in_bot" for f in findings)
+
+
+def test_a_naive_order_date_is_read_as_utc():
+    """v_live_orders.order_date is `timestamp without time zone` and freqtrade
+    stores UTC in it. Reading it as local time would move the floor by hours and
+    let real findings through, or hide them."""
+    from app.validation.reconcile import _as_utc
+
+    naive = _as_utc("2026-08-20T09:01:36.752")
+    aware = _as_utc("2026-08-20T09:01:36.752+00:00")
+    assert naive == aware
+    assert naive.tzinfo is not None
+
+
+def test_an_explicit_floor_overrides_the_derived_one():
+    provider = FakeProvider(orders=[_order("OLD", timestamp=_ago(days=5))])
+    bot = [{"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": "OURS",
+            "filled": 1.0, "average": 100.0, "status": "closed",
+            "order_date": (_ago(days=30)).replace(tzinfo=None).isoformat()}]
+    assert any(f.kind == "missing_in_bot" for f in reconcile_orders(provider, bot))
+    assert not any(f.kind == "missing_in_bot" for f in
+                   reconcile_orders(provider, bot, history_floor=_ago(days=1)))
+
+
 def test_order_the_bot_never_placed_is_flagged_as_critical():
-    provider = FakeProvider(orders=[_order("GHOST")])
+    provider = FakeProvider(orders=[_order("GHOST", timestamp=_ago(hours=2))])
     outcome, findings = engine.run_reconciliation(provider, [
         {"ft_order_id": 1, "pair": "BTC/USDT", "exchange_order_id": None,
          "filled": 1.0, "average": 100.0, "status": "closed"}
