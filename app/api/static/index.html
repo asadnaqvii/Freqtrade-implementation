@@ -872,8 +872,13 @@
               <button class="btn tiny" data-hf="open">Open</button>
               <button class="btn tiny" data-hf="closed">Closed</button>
             </div>
-            <input id="hist-search" placeholder="filter by pair, tag or reason"
+            <input id="hist-search" placeholder="filter by pair, tag, reason or strategy"
                    style="width:auto;min-width:210px">
+            <!-- Filled from the trades themselves and hidden while only one
+                 strategy has ever run: a filter with a single option is a
+                 control that teaches you nothing. It appears the moment a
+                 second strategy takes a trade. -->
+            <div class="chips" id="hist-strategy" hidden></div>
           </div>
           <p class="hint" id="trade-hist-note">Every trade this account has, from both stores at
             once: the running bot's own tables, and what has been preserved across deployments
@@ -911,12 +916,21 @@
             fingerprint differs even when the name does not, and the trade stamps alone
             cannot see that.</p>
           <div class="scroll"><table><thead><tr>
-            <th>Strategy</th><th>Mode</th><th>From</th><th>To</th>
-            <th class="r">Trades</th><th class="r">Profit</th><th class="r">Win rate</th>
-            <th>Source</th>
+            <th>Strategy</th><th>Mode</th><th>Ran</th>
+            <th class="r">Trades</th><th class="r">Profit</th><th class="r">Per day</th>
+            <th class="r">Win rate</th><th class="r">Avg win</th><th class="r">Avg loss</th>
+            <th class="r">Profit factor</th><th class="r">Max drawdown</th>
+            <th>Exits</th><th>Source</th>
           </tr></thead><tbody id="deployment-rows">
-            <tr><td colspan="8" class="empty">&mdash;</td></tr>
+            <tr><td colspan="13" class="empty">&mdash;</td></tr>
           </tbody></table></div>
+          <p class="hint" style="margin:12px 0 0">
+            Profit factor is gross win over gross loss: above 1 the strategy makes money,
+            below 1 it does not, and it is the one number a good run of luck cannot flatter
+            for long. Read it next to <em>avg win</em> against <em>avg loss</em> &mdash; a high
+            win rate with a much larger average loss is a losing system that has not lost yet.
+            <em>Per day</em> is there so a run of five days and one of three weeks can be
+            compared at all.</p>
         </div>
 
         <div class="card">
@@ -1692,7 +1706,7 @@ async function loadBots() {
 
 // Read from Postgres, not from the bot: this is the copy that outlives a
 // redeploy, and the only history left when the bot is unreachable.
-let histTrades = [], histFilter = "all", histQuery = "";
+let histTrades = [], histFilter = "all", histQuery = "", histStrategy = "all";
 
 const heldBetween = (a, b) => {
   if (!a) return "—";
@@ -1759,24 +1773,42 @@ async function loadDeployments() {
     const rows = deployments || [];
     $("deployment-rows").innerHTML = rows.length ? rows.map(d => {
       const p = Number(d.profit_abs) || 0;
+      const perDay = d.profit_per_day == null ? null : Number(d.profit_per_day);
+      const pf = d.profit_factor == null ? null : Number(d.profit_factor);
+      const dd = Number(d.max_drawdown) || 0;
       // The trade stamps and the deployment window should name the same
       // strategy. Where they do not, say so rather than quietly picking one.
       const odd = (d.stamped || []).filter(x => x && x !== d.strategy);
+      // Above 1 the run made money, below 1 it did not. Nothing else on the
+      // row survives a lucky streak as poorly, so it gets the only colour.
+      const pfPill = pf == null ? '<span class="muted">—</span>'
+        : `<span class="pill ${pf >= 1.5 ? "ok" : pf >= 1 ? "warn" : "bad"}">${fmtNum(pf, 2)}</span>`;
+      const ran = d.ended_at
+        ? `${shortDate(d.started_at)} &rarr; ${shortDate(d.ended_at)}`
+        : `${shortDate(d.started_at)} &rarr; <span class="pill ok">running</span>`;
+      const exits = Object.entries(d.exits || {})
+        .map(([reason, n]) => `${esc(reason)}&nbsp;${n}`).join(", ");
       return `<tr>
         <td><strong>${esc(d.strategy)}</strong>${odd.length
             ? ` <span class="pill warn" title="Trades in this window are stamped ${esc(odd.join(", "))}">mixed stamps</span>` : ""}</td>
         <td><span class="pill ${d.trading_mode === "live" ? "info" : "neutral"}">${esc(d.trading_mode || "—")}</span></td>
-        <td class="muted">${shortDate(d.started_at)}</td>
-        <td class="muted">${d.ended_at ? shortDate(d.ended_at) : '<span class="pill ok">running</span>'}</td>
+        <td class="muted" style="white-space:nowrap">${ran}
+          ${d.days ? `<br><span class="muted" style="font-size:11px">${fmtNum(d.days, 1)} days</span>` : ""}</td>
         <td class="r num">${d.trades ?? 0}</td>
         <td class="r num">${d.trades ? signed(p, (p >= 0 ? "+" : "") + fmtNum(p)) : "—"}</td>
+        <td class="r num">${perDay == null ? "—" : signed(perDay, (perDay >= 0 ? "+" : "") + fmtNum(perDay))}</td>
         <td class="r num">${d.win_rate == null ? "—" : fmtNum(d.win_rate, 1) + "%"}</td>
+        <td class="r num">${d.avg_win == null ? "—" : "+" + fmtNum(d.avg_win)}</td>
+        <td class="r num">${d.avg_loss == null ? "—" : fmtNum(d.avg_loss)}</td>
+        <td class="r">${pfPill}</td>
+        <td class="r num">${d.trades ? fmtNum(dd) : "—"}</td>
+        <td class="muted" style="font-size:11px">${exits || "—"}</td>
         <td class="muted mono" style="font-size:11px">${esc((d.source_sha || "—").slice(0, 12))}</td>
       </tr>`;
-    }).join("") : '<tr><td colspan="8" class="empty">No deployments recorded yet</td></tr>';
+    }).join("") : '<tr><td colspan="13" class="empty">No deployments recorded yet</td></tr>';
   } catch (e) {
     $("deployment-rows").innerHTML =
-      `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+      `<tr><td colspan="13" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1784,6 +1816,7 @@ async function loadStoredTrades() {
   const { trades, counts, totals, profit_factor, expectancy, best } =
     await api("/api/bots/history");
   histTrades = trades || [];
+  renderStrategyChips();
 
   const c = counts || {}, tot = totals || {};
   liveHistory = { counts: c, totals: tot, profit_factor: profit_factor,
@@ -1815,6 +1848,7 @@ function renderHistory() {
   const rows = histTrades.filter(t => {
     if (histFilter === "open" && !t.is_open) return false;
     if (histFilter === "closed" && t.is_open) return false;
+    if (histStrategy !== "all" && String(t.strategy ?? "") !== histStrategy) return false;
     if (!q) return true;
     return [t.pair, t.enter_tag, t.exit_reason, t.strategy, t.exchange]
       .some(v => String(v ?? "").toLowerCase().includes(q));
@@ -1846,6 +1880,29 @@ function renderHistory() {
   $("trade-hist-count").textContent = rows.length === histTrades.length
     ? `Showing all ${rows.length} trades.`
     : `Showing ${rows.length} of ${histTrades.length} trades.`;
+}
+
+function renderStrategyChips() {
+  // Every strategy that has actually traded, most recent first. freqtrade
+  // stamps the class name on each trade, so an edit that keeps the name reads
+  // as one strategy here -- the deployment table below is where a same-name
+  // edit separates out, by source fingerprint.
+  const names = [...new Set(histTrades.map(t => t.strategy).filter(Boolean))];
+  const box = $("hist-strategy");
+  if (names.length < 2) {
+    box.hidden = true;
+    histStrategy = "all";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = ["all", ...names].map(name =>
+    `<button class="btn tiny${histStrategy === name ? " active" : ""}" data-hs="${esc(name)}">${
+      name === "all" ? "All strategies" : esc(name)}</button>`).join("");
+  box.querySelectorAll("[data-hs]").forEach(b => b.onclick = () => {
+    histStrategy = b.dataset.hs;
+    renderStrategyChips();
+    renderHistory();
+  });
 }
 
 document.querySelectorAll("#hist-filter [data-hf]").forEach(b => b.onclick = () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
@@ -116,6 +117,91 @@ def _best_pair(closed: list[dict]) -> dict:
         return {}
     name = max(totals, key=lambda k: totals[k])
     return {"name": name, "profit_abs": round(totals[name], 8)}
+
+
+def _days_between(started, ended) -> float | None:
+    """How long a deployment ran, in days, ending now if it still is."""
+    if not started:
+        return None
+    try:
+        begin = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+        finish = (datetime.fromisoformat(str(ended).replace("Z", "+00:00"))
+                  if ended else datetime.now(timezone.utc))
+    except (TypeError, ValueError):
+        return None
+    if begin.tzinfo is None:
+        begin = begin.replace(tzinfo=timezone.utc)
+    if finish.tzinfo is None:
+        finish = finish.replace(tzinfo=timezone.utc)
+    days = (finish - begin).total_seconds() / 86400
+    return round(days, 3) if days > 0 else None
+
+
+def _worst_pair(closed: list[dict]) -> dict:
+    """The pair that lost the most. The one you actually act on."""
+    totals: dict[str, float] = {}
+    for t in closed:
+        if t.get("close_profit_abs") is None or not t.get("pair"):
+            continue
+        totals[t["pair"]] = totals.get(t["pair"], 0.0) + float(t["close_profit_abs"])
+    if not totals:
+        return {}
+    name = min(totals, key=lambda k: totals[k])
+    return {"name": name, "profit_abs": round(totals[name], 8)}
+
+
+def _performance(closed: list[dict]) -> dict:
+    """The numbers that let one run be compared against another.
+
+    Total profit alone cannot answer "is the new strategy better". A run of
+    three days and a run of three weeks produce incomparable totals, and a
+    strategy can be up over a sample while losing money per unit of risk. So
+    this reports rate and shape, not only the sum.
+
+    The pair to read first is avg_win against avg_loss. v1's live record was 12
+    wins in 13 trades and still a losing system in backtest, because the
+    trailing stop clipped winners near +1.5% while losers ran to the -6% stop.
+    A win rate on its own hides precisely that.
+    """
+    profits = [float(t["close_profit_abs"]) for t in closed
+               if t.get("close_profit_abs") is not None]
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+
+    # Worst peak-to-trough of the running total. Walked oldest-first, because
+    # the trade lists everywhere else in this module are newest-first.
+    peak = running = drawdown = 0.0
+    for profit in reversed(profits):
+        running += profit
+        peak = max(peak, running)
+        drawdown = min(drawdown, running - peak)
+
+    # How the trades ended. This is what shows the mechanism rather than the
+    # result: a run that is up because ROI fired and one that is up because
+    # nothing has hit its stop yet are not the same run.
+    exits: dict[str, int] = {}
+    for trade in closed:
+        exits[str(trade.get("exit_reason") or "unknown")] = 1 + exits.get(
+            str(trade.get("exit_reason") or "unknown"), 0)
+
+    return {
+        "trades": len(profits),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(len(wins) / len(profits) * 100, 2) if profits else None,
+        "profit_abs": round(sum(profits), 8) if profits else 0.0,
+        "avg_win": round(sum(wins) / len(wins), 8) if wins else None,
+        "avg_loss": round(sum(losses) / len(losses), 8) if losses else None,
+        # Gross win over gross loss. Undefined rather than infinite when nothing
+        # has lost yet: "inf" on a five-trade sample is not a useful headline.
+        "profit_factor": (round(sum(wins) / abs(sum(losses)), 4)
+                          if losses and wins else None),
+        "expectancy": round(sum(profits) / len(profits), 8) if profits else None,
+        "max_drawdown": round(drawdown, 8),
+        "exits": dict(sorted(exits.items(), key=lambda kv: -kv[1])),
+        "best": _best_pair(closed),
+        "worst": _worst_pair(closed),
+    }
 
 
 def _merged_trades(db, limit: int = 20000) -> list[dict]:
@@ -260,11 +346,16 @@ async def strategy_history(db: UserDB) -> dict:
         window = [t for t in trades
                   if str(t.get("open_date") or "") >= str(started)
                   and (not ended or str(t.get("open_date") or "") < str(ended))]
-        profits = [float(t["close_profit_abs"]) for t in window]
-        wins = [p for p in profits if p > 0]
-        row["trades"] = len(window)
-        row["profit_abs"] = round(sum(profits), 8) if profits else 0.0
-        row["win_rate"] = round(len(wins) / len(profits) * 100, 2) if profits else None
+        row.update(_performance(window))
+
+        # Normalised, so a run of three days and a run of three weeks can be
+        # read side by side. Without this the longest run always looks best.
+        days = _days_between(started, ended)
+        row["days"] = days
+        row["profit_per_day"] = (round(row["profit_abs"] / days, 8)
+                                 if days and row["trades"] else None)
+        row["trades_per_day"] = round(row["trades"] / days, 2) if days else None
+
         # The stamp on the trades themselves. Where this disagrees with the
         # deployment, a trade outlived a strategy change or something is wrong,
         # and either is worth seeing rather than averaging away.
