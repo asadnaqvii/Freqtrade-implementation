@@ -60,6 +60,19 @@ def _env(name, default=None):
     return value.strip() if isinstance(value, str) else value
 
 
+def _env_list(name, default):
+    """A comma-separated env var as a list, or the default when unset.
+
+    Set but empty is a deliberate empty list, not "use the default": clearing a
+    blacklist has to be expressible, and silently reinstating one somebody meant
+    to remove is the kind of surprise that only shows up in a trade.
+    """
+    raw = _env(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 REQUIRED = ["FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET", "FREQTRADE__EXCHANGE__PASSWORD"]
 missing = [v for v in REQUIRED if not _env(v)]
 if missing:
@@ -119,12 +132,12 @@ config = {
     "max_open_trades": int(_env("FREQTRADE_MAX_OPEN_TRADES", "6") or 6),
     "stake_currency": _env("FREQTRADE_STAKE_CURRENCY", "USDT"),
     "stake_amount": float(_env("FREQTRADE_STAKE_AMOUNT", "10") or 10),
-    "tradable_balance_ratio": 0.99,
+    "tradable_balance_ratio": float(_env("FREQTRADE_TRADABLE_RATIO", "0.95") or 0.95),
     "fiat_display_currency": "USD",
     "dry_run": dry_run,
     "dry_run_wallet": 1000,
     "cancel_open_orders_on_exit": False,
-    "unfilledtimeout": {"entry": 10, "exit": 10, "exit_timeout_count": 0, "unit": "minutes"},
+    "unfilledtimeout": {"entry": 30, "exit": 30, "exit_timeout_count": 0, "unit": "minutes"},
     "entry_pricing": {
         "price_side": "same",
         "use_order_book": True,
@@ -142,17 +155,46 @@ config = {
         "ccxt_async_config": {"aiohttp_trust_env": True},
         # Populated at runtime by VolumePairList, not hardcoded.
         "pair_whitelist": [],
-        "pair_blacklist": ["BNB/.*", ".*UP/USDT", ".*DOWN/USDT", ".*BEAR/USDT", ".*BULL/USDT"],
+        # Leveraged tokens and wrappers are structural: they are not what the
+        # strategy models. The named coins come from v3's config, picked off
+        # this account's own performance-by-pair numbers rather than a hunch --
+        # revisit them as more data arrives, since a pair losing over two or
+        # three trades is not proven bad, only bad so far.
+        "pair_blacklist": _env_list(
+            "FREQTRADE_PAIR_BLACKLIST",
+            ["BNB/.*", ".*UP/USDT", ".*DOWN/USDT", ".*BEAR/USDT", ".*BULL/USDT",
+             "ZEC/USDT", "UNI/USDT", "SHIB/USDT", "PEPE/USDT", "AAVE/USDT"],
+        ),
     },
     "pairlists": [
+        # A floor on quote volume. This was 0 -- no floor at all -- so the top
+        # 25 by volume could still include a pair thin enough that the spread
+        # eats the edge the strategy is trying to capture.
         {"method": "VolumePairList", "number_assets": 25, "sort_key": "quoteVolume",
-         "min_value": 0, "refresh_period": 3600},
+         "min_value": float(_env("FREQTRADE_MIN_QUOTE_VOLUME", "5000000") or 0),
+         "refresh_period": 3600},
         {"method": "AgeFilter", "min_days_listed": 60},
         {"method": "SpreadFilter", "max_spread_ratio": 0.005},
         {"method": "RangeStabilityFilter", "lookback_days": 10, "min_rate_of_change": 0.03,
          "refresh_period": 3600},
         {"method": "VolatilityFilter", "lookback_days": 10, "min_volatility": 0.02,
          "max_volatility": 0.75, "refresh_period": 3600},
+    ],
+    # Circuit breakers. There were none: nothing stopped the bot re-entering a
+    # pair it had just been stopped out of, or trading on through a drawdown.
+    # These are freqtrade's own, configured as v3's config asks.
+    "protections": [
+        # Do not immediately re-enter a pair that just exited. The pullback
+        # setup can still read as valid on the candle after a stop-out.
+        {"method": "CooldownPeriod", "stop_duration_candles": 3},
+        # Stop trading entirely after a 10% drawdown over the last 60 candles.
+        # The one that limits how bad a bad week gets.
+        {"method": "MaxDrawdown", "lookback_period_candles": 60, "trade_limit": 10,
+         "stop_duration_candles": 12, "max_allowed_drawdown": 0.1},
+        # Three stop-losses inside 24 candles means the regime is not what the
+        # strategy assumes. Pause rather than keep paying to find out.
+        {"method": "StoplossGuard", "lookback_period_candles": 24, "trade_limit": 3,
+         "stop_duration_candles": 12, "only_per_pair": False},
     ],
     "edge": {"enabled": False},
     "api_server": {
