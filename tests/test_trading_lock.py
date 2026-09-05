@@ -39,6 +39,7 @@ def load_lock_module(monkeypatch, psycopg2_stub):
     start = source.index("_trading_lock_conn = None")
     end = source.index("def verify_database(")
     namespace = {
+        "os": __import__("os"),
         "time": __import__("time"),
         "threading": __import__("threading"),
         "print": lambda *a, **k: None,
@@ -167,7 +168,7 @@ def test_the_incumbent_is_asked_to_stand_down(monkeypatch, server):
     assert incumbent["acquire_trading_lock"]("postgresql://x/y", "bot") is True
 
     yielded = []
-    incumbent["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
 
     # Real clock on both sides: the handshake is a race between two threads, and
     # a fake clock on one of them removes the very interleaving under test.
@@ -323,7 +324,7 @@ def test_the_watcher_survives_a_dropped_query_and_still_stands_down(monkeypatch,
     conn.cursor = flaky
 
     yielded = []
-    incumbent["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
 
     import time as real_time
 
@@ -380,21 +381,116 @@ def test_the_process_always_boots_stopped_when_a_lock_is_in_use():
     )
 
 
+def _standing_down(monkeypatch, server, reason):
+    """Run stand_down against a fake lock server and record what it did."""
+    ns = load_lock_module(monkeypatch, stub(server))
+    conn = stub(server).connect()
+    ns["_trading_lock_conn"] = conn
+
+    calls, exits = [], []
+    ns["os"] = types.SimpleNamespace(_exit=lambda code: exits.append(code))
+    ns["time"] = types.SimpleNamespace(sleep=lambda s: calls.append(("slept", s)))
+
+    def local(path, method="GET"):
+        calls.append((path, method))
+        return {"status": "stopped"}
+
+    ns["stand_down"](reason, local)
+    return ns, conn, calls, exits
+
+
+def test_a_handover_stops_trading_releases_the_lock_and_does_not_exit(monkeypatch):
+    """The deploy path. Every step matters and the absent one matters most.
+
+    Stopping trading first is what keeps this process off the market while the
+    replacement takes over. Releasing the lock is what lets the replacement
+    become healthy -- that is the deadlock this whole mechanism exists to break.
+    Not exiting is what stops Render recording a failure and emailing about it.
+    """
+    server = Postgres()
+    ns, conn, calls, exits = _standing_down(monkeypatch, server, "takeover")
+
+    assert ("stop", "POST") in calls, "it kept trading while handing over"
+    assert conn.closed, "the lock was not released; the replacement cannot start"
+    assert ns["_stood_down"].is_set()
+
+    # It waits to be terminated rather than ending itself. The only exit left is
+    # the last resort, and it comes after the full grace -- so in production,
+    # where the platform does stop us, it is never reached.
+    assert calls[-1] == ("slept", ns["STANDDOWN_EXIT_AFTER"]), (
+        "it must wait for the platform, not exit on its own"
+    )
+    assert exits in ([], [0]), "the handover path must not exit before waiting"
+
+
+def test_losing_the_lock_connection_does_exit(monkeypatch):
+    """The other ending, and it must stay different.
+
+    Here nothing is waiting to replace us -- our own lock connection died. Going
+    inert would leave the service up with nothing trading, so this one exits and
+    the failure notice it sends is a true one.
+    """
+    server = Postgres()
+    _, conn, calls, exits = _standing_down(monkeypatch, server, "lock_lost")
+
+    assert ("stop", "POST") in calls, "it kept trading with no lock"
+    assert exits[0] == 1, "a lost lock must end the process, not idle it"
+    assert not any(c[0] == "slept" for c in calls), (
+        "it must not idle for the grace period when nothing is coming to replace it"
+    )
+
+
+def test_the_lock_is_released_even_if_the_bot_will_not_stop(monkeypatch):
+    """A replacement blocked on the lock is worse than an unstopped trader: the
+    trader is about to be terminated anyway, the deploy is not."""
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    conn = stub(server).connect()
+    ns["_trading_lock_conn"] = conn
+    ns["os"] = types.SimpleNamespace(_exit=lambda code: None)
+    ns["time"] = types.SimpleNamespace(sleep=lambda s: None)
+
+    def local(path, method="GET"):
+        raise RuntimeError("api not answering")
+
+    ns["stand_down"]("takeover", local)
+    assert conn.closed, "a failed stop must not strand the lock"
+
+
+def test_the_watcher_says_which_ending_it_wants(monkeypatch):
+    """The two endings are chosen by the caller, so the reason has to arrive."""
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    ns["_trading_lock_conn"] = stub(server).connect()
+
+    _, wanted_key = ns["_lock_keys"]("bot")
+    waiter = stub(server).connect()
+    server.try_lock(wanted_key, waiter)
+
+    seen = []
+    ns["watch_for_takeover"]("bot", lambda reason: seen.append(reason), poll_seconds=0.02)
+
+    import time as real_time
+    for _ in range(200):
+        if seen:
+            break
+        real_time.sleep(0.02)
+    assert seen == ["takeover"]
+
+
 def test_nothing_exits_on_the_normal_deploy_path():
     """A deliberate exit reads as a crash to the platform.
 
-    os._exit is kept for the fallback -- two instances left up by the platform --
-    but must not sit on the path a normal deploy takes.
+    Render classes any self-initiated exit as `earlyExit`, records
+    `server_failed`, and emails "your service failed". Standing down used to
+    exit, so every deploy sent a crash notice for a handover that went to plan
+    -- 5 Sep 08:57:06, indistinguishable in the inbox from the real crashes on
+    31 August and 4 September.
     """
     source = (ROOT / "render_start.py").read_text()
     body = source[source.index("def _take_lock_then_trade"):
                   source.index("from freqtrade.main import main as freqtrade_main")]
-
-    # Position in the text would flag stand_down's own definition, which sits
-    # just above its use. What matters is that every exit is inside it.
-    assert body.count("os._exit") == 1, "more than one exit path on startup"
-    inner = body[body.index("def stand_down"):]
-    assert "os._exit" in inner, "the only exit must be the takeover fallback"
+    assert "os._exit" not in body, "startup must not exit; the platform stops us"
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +520,7 @@ def test_losing_the_lock_connection_stops_this_process(monkeypatch, server):
     conn.cursor = dead
 
     yielded = []
-    ns["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
 
     import time as real_time
 
@@ -457,7 +553,7 @@ def test_a_single_dropped_query_does_not_stop_trading(monkeypatch, server):
     conn.cursor = flaky
 
     yielded = []
-    ns["watch_for_takeover"]("bot", lambda: yielded.append(True), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
 
     import time as real_time
 

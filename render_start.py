@@ -211,6 +211,17 @@ except Exception as exc:
 # function that took it. Module level, deliberately.
 _trading_lock_conn = None
 
+# Set once this instance has yielded the trading lock. The heartbeat checks it:
+# a process that has stood down must stop claiming to be the live bot, or the
+# dashboard shows the outgoing instance as healthy while the incoming one works.
+_stood_down = threading.Event()
+
+#: How long to wait for the platform to stop a stood-down instance before
+#: exiting anyway. Only reached if the platform never terminates us, which a
+#: rolling deploy always does; leaving an inert process up forever is worse than
+#: the one failure notice exiting costs.
+STANDDOWN_EXIT_AFTER = 900
+
 
 def _lock_keys(name):
     """Two keys per bot: the trading lock, and a flag meaning someone wants it."""
@@ -318,6 +329,10 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
     The incumbent has to release, or a rolling deploy can never complete: the
     replacement is not healthy until it holds the lock, and the platform will not
     stop the incumbent until the replacement is healthy.
+
+    `on_yield` is called with why: "takeover" when a replacement asked for the
+    lock, which is routine, or "lock_lost" when this process's own lock
+    connection died, which is a fault. They need different endings.
     """
     _, wanted_key = _lock_keys(name)
 
@@ -353,16 +368,78 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
                           "server-side while this process is still trading. "
                           "Exiting so a replacement can take it cleanly.",
                           flush=True)
-                    on_yield()
+                    on_yield("lock_lost")
                     return
                 continue
             if not free:
                 print("a newer instance wants the trading lock; standing down",
                       flush=True)
-                on_yield()
+                on_yield("takeover")
                 return
 
     threading.Thread(target=watch, daemon=True, name="takeover").start()
+
+
+def stand_down(reason, local):
+    """Go inert and let the platform stop us, rather than exiting.
+
+    This used to call os._exit(0). It worked -- the lock was released and
+    the replacement started -- but Render classes any self-initiated exit as
+    `earlyExit`, records `server_failed`, and emails "your service failed".
+    Every deploy therefore sent a crash notice for a handover that went
+    exactly to plan, which is indistinguishable from the two real crashes on
+    31 August and 4 September. A crash alert that fires when nothing is
+    wrong is one you learn to skim.
+
+    Standing down never required exiting. The deadlock it breaks is that the
+    replacement is not healthy until it holds the lock, and the platform will
+    not stop the incumbent until the replacement is healthy -- so releasing
+    the lock is sufficient. Render then terminates this process by SIGTERM in
+    the ordinary way, and records no failure.
+    """
+    global _trading_lock_conn
+
+    _stood_down.set()
+
+    # Stop trading first. Between here and being terminated this process
+    # must not act on the market, and the replacement is about to.
+    try:
+        print(f"stopped trading ({local('stop', 'POST').get('status')})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - releasing the lock still matters
+        print(f"could not stop the trader before standing down: {exc}", flush=True)
+
+    # Closing the connection releases the advisory lock server-side, which
+    # is what the replacement is waiting on.
+    conn, _trading_lock_conn = _trading_lock_conn, None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not close the lock connection: {exc}", flush=True)
+
+    if reason == "lock_lost":
+        # Nothing is waiting to replace us: our own lock connection died, so
+        # the lock is already gone server-side and no other instance has
+        # been started. Going inert here would leave nothing trading at all
+        # while the service still looked up. Exit non-zero so the platform
+        # starts a fresh process -- and so the failure notice this sends is
+        # a true one, unlike the handover above.
+        print("the lock connection is gone and no replacement is waiting; "
+              "exiting so the platform starts a fresh instance", flush=True)
+        os._exit(1)
+        return  # unreachable in production; os._exit does not return
+
+    print("trading lock released; waiting for the platform to stop this "
+          "instance", flush=True)
+
+    # Nothing left to do but wait to be terminated. This runs on a daemon
+    # thread, so a SIGTERM from the platform ends it with the process; the
+    # exit below is only reached if that never comes.
+    time.sleep(STANDDOWN_EXIT_AFTER)
+    print(f"still running {STANDDOWN_EXIT_AFTER}s after standing down; the "
+          "platform has not stopped this instance, so exiting rather than "
+          "sitting here inert.", flush=True)
+    os._exit(0)
 
 
 def verify_database(url, expected_schema):
@@ -829,6 +906,13 @@ def register_and_heartbeat():
             time.sleep(60)
             if not bot_id:
                 return
+            # Stood down: the replacement owns this bot's row now. Carrying on
+            # would overwrite its heartbeat with this instance's dying state,
+            # so the dashboard would show the outgoing process while the
+            # incoming one does the trading.
+            if _stood_down.is_set():
+                print("stood down; stopping the heartbeat", flush=True)
+                return
             # "running" used to be hardcoded, which made the column a statement
             # that the process exists rather than that it is trading. A bot that
             # is up, healthy and STOPPED manages no stop-loss on anything it
@@ -934,12 +1018,7 @@ def _take_lock_then_trade():
 
     # Still watched, as a fallback: if the platform ever leaves two instances
     # up, the older one gives way rather than both sitting on one database.
-    def stand_down():
-        print("a newer instance is waiting and the platform has not stopped this one; "
-              "yielding the lock", flush=True)
-        os._exit(0)
-
-    watch_for_takeover(bot_name, stand_down)
+    watch_for_takeover(bot_name, lambda reason: stand_down(reason, local))
 
 
 if db_url:
