@@ -34,8 +34,12 @@ services:
         value: "8080"
       - key: BOT_NAME
         value: freqtrade-bot
+      # Switching strategies is this one value, and so is rolling the switch
+      # back -- no code change, no rebuild. The class name is also what every
+      # trade is stamped with, so v1 and v3 separate on their own in the trade
+      # history rather than needing to be told apart afterwards.
       - key: FREQTRADE_STRATEGY
-        value: TrendPullbackStrategy
+        value: TrendPullbackStrategy_v3
       - key: FREQTRADE__EXCHANGE__NAME
         value: kucoin
       # Freqtrade's own tables live in their own schema, which is never exposed
