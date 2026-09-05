@@ -19,6 +19,7 @@ class Client:
         self.select_boom = select_boom
         self.upsert_boom = upsert_boom
         self.selects = []
+        self.orders = []
         self.upserts = []
 
     def select(self, table, *, columns="*", filters=None, order=None, limit=None,
@@ -26,6 +27,7 @@ class Client:
         if self.select_boom:
             raise self.select_boom
         self.selects.append((table, dict(filters or {})))
+        self.orders.append(order)
         return list(self.rows)
 
     def upsert(self, table, rows, *, on_conflict, returning=True):
@@ -61,13 +63,31 @@ def test_a_closed_trade_is_archived_with_its_strategy():
     assert rows[0]["bot_instance_id"] == "b1" and rows[0]["owner_id"] == "o1"
 
 
-def test_only_closed_trades_are_asked_for():
-    """An open position's profit moves with the market; archiving one stores a
-    number that is already wrong."""
-    c = Client(rows=[trade()])
+def test_open_positions_are_archived_too():
+    """These were excluded, on the reasoning that an open position's profit
+    moves with the market. It does not: freqtrade leaves the close_* columns
+    NULL until a trade closes, so an open row carries no number to go stale.
+
+    What the exclusion cost was the count the watchdog reads from this table.
+    It was always zero, so the sentence that makes an outage urgent -- "6
+    position(s) open and unmanaged" -- could never appear. The count has to be
+    here because it is wanted exactly when the bot is unreachable and its own
+    live view cannot be read."""
+    c = Client(rows=[trade(), trade(ft_trade_id=10, is_open=True,
+                                    close_date=None, close_rate=None,
+                                    close_profit_abs=None, close_profit_pct=None)])
     archive.sync(c, bot_instance_id="b1", owner_id=None)
     _, filters = c.selects[0]
-    assert filters.get("is_open") == "is.false"
+    assert filters.get("is_open") is None, "open positions must not be filtered out"
+    assert {r["ft_trade_id"] for r in c.upserts[0][1]} == {9, 10}
+
+
+def test_the_ordering_does_not_depend_on_a_null_column():
+    """The order decides which rows survive the limit. Ordering by close_date
+    sorted on a column every open trade leaves NULL."""
+    c = Client(rows=[trade()])
+    archive.sync(c, bot_instance_id="b1", owner_id=None)
+    assert c.orders[0].startswith("open_date")
 
 
 def test_re_running_is_an_upsert_not_a_duplicate():

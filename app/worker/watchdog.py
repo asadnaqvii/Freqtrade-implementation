@@ -41,6 +41,16 @@ ALARMING = {"offline": "offline", "stale": "stale"}
 #: itself within a minute; paging on it teaches you to ignore the channel.
 NOTIFY_KINDS = {"offline", "not_trading"}
 
+#: How long after starting a bot is allowed to be up without serving yet.
+#: A rolling deploy registers the replacement and starts its heartbeat before
+#: its local API is answering, so for one sweep it reads alive-but-unreachable
+#: and opened a `not_trading` incident -- seen at 06:28:45 on 2026-09-05,
+#: resolved 61 seconds later, nothing wrong. `not_trading` pages, so that is a
+#: page on every deploy, and the rule this module was written around is that a
+#: watchdog which cries during deploys gets muted. A bot still not serving after
+#: this long is not booting, and is reported.
+STARTUP_GRACE_SECONDS = 300
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -132,6 +142,23 @@ def _resolve_incidents(client, bot: dict, keep: set[str],
                    + (f" after {seconds}s" if seconds is not None else ""))
 
 
+def _still_booting(bot: dict) -> bool:
+    """Has this bot started too recently to be judged for not serving yet?
+
+    Only ever excuses a bot that reports `unreachable`. One deliberately
+    stopped, or reporting `stopped`/`paused`, is not booting -- it is not
+    trading, and that is worth saying however recently it started.
+    """
+    if str(bot.get("status") or "").lower() != "unreachable":
+        return False
+    try:
+        uptime = float(bot.get("uptime_seconds"))
+    except (TypeError, ValueError):
+        # No started_at recorded: nothing says it is booting, so judge it.
+        return False
+    return 0 <= uptime < STARTUP_GRACE_SECONDS
+
+
 def sweep(client, *, webhook_url: str | None = None) -> int:
     """One pass over every bot. Returns how many are currently in trouble."""
     try:
@@ -180,7 +207,8 @@ def sweep(client, *, webhook_url: str | None = None) -> int:
         # being managed on anything it holds.
         elif (intended == "running"
               and str(bot.get("status") or "").lower() in ("stopped", "paused",
-                                                           "unreachable")):
+                                                           "unreachable")
+              and not _still_booting(bot)):
             reported = str(bot.get("status")).lower()
             open_trades = bot.get("open_trades") or 0
             detail = f"heartbeating normally but reporting {reported}."

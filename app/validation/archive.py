@@ -10,9 +10,19 @@ public.trade_archive is the copy that outlives all of that. It already held the
 Railway history, imported once by hand; nothing was keeping it current, so it
 recorded a bot that no longer exists and none of the one that does.
 
-Deliberately closed trades only. An open position's profit moves with the
-market, so archiving one stores a number that is wrong by the time it is read;
-it lands here when it closes and its result is final.
+Open positions are archived too. They were excluded on the reasoning that an
+open position's profit moves with the market, so storing one stores a number
+that is wrong by the time it is read. That reasoning does not survive contact
+with the data: freqtrade leaves close_date, close_rate, close_profit_abs and
+close_profit_pct NULL until a trade closes, so an open row carries no moving
+number to go stale.
+
+What the exclusion did cost was the one number the watchdog needs most. It
+counts open positions from this table, so it always read zero, and the sentence
+that turns an outage into urgency -- "6 position(s) open and unmanaged, no
+stop-loss is being applied" -- could never fire. The count has to live here
+precisely because it is wanted when the bot is unreachable, which is exactly
+when its own live view cannot be read.
 """
 
 from __future__ import annotations
@@ -52,19 +62,21 @@ FIELDS = (
 
 def sync(client, *, bot_instance_id: str | None, owner_id: str | None,
          trading_mode: str = "live", limit: int = 1000) -> int:
-    """Upsert every closed trade the bot has into the archive.
+    """Upsert every trade the bot has into the archive, open ones included.
 
     Keyed on (bot_instance_id, ft_trade_id), so re-running is a no-op for
     trades already stored and an update for ones whose final numbers arrived
-    late. Returns how many rows were written.
+    late -- which is what a position closing looks like from here. Returns how
+    many rows were written.
     """
     if not bot_instance_id:
         return 0
 
     try:
+        # Ordered by open_date, not close_date: an open trade has no close date,
+        # and ordering by a null column decides which rows the limit keeps.
         rows = client.select("v_live_trades", columns="*",
-                             filters={"is_open": "is.false"},
-                             order="close_date.desc", limit=limit)
+                             order="open_date.desc", limit=limit)
     except Exception as exc:  # noqa: BLE001 - the view exists only after first connect
         log.info("no live trade view to archive from: %s", exc)
         return 0

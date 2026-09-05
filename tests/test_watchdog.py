@@ -53,7 +53,8 @@ class Client:
 def bot(**kw):
     base = {"id": "b1", "owner_id": "o1", "name": "freqtrade-bot",
             "status": "running", "desired_state": "running", "health": "healthy",
-            "heartbeat_age_seconds": 12, "open_trades": 0}
+            "heartbeat_age_seconds": 12, "open_trades": 0,
+            "uptime_seconds": 86400}
     return {**base, **kw}
 
 
@@ -137,6 +138,48 @@ def test_a_retired_bot_is_not_an_outage(no_real_webhooks):
     c = Client(bots=[bot(health="retired", desired_state=None)])
     assert watchdog.sweep(c) == 0
     assert c.inserted == []
+
+
+def test_a_bot_still_booting_is_not_reported_as_not_trading(no_real_webhooks):
+    """A rolling deploy registers the replacement and starts its heartbeat
+    before its local API answers, so for one sweep it reads alive-but-
+    unreachable. Seen at 06:28:45 on 2026-09-05, resolved 61 seconds later,
+    nothing wrong -- and `not_trading` pages, so that is a page per deploy."""
+    c = Client(bots=[bot(status="unreachable", uptime_seconds=20)])
+    assert watchdog.sweep(c) == 0
+    assert c.inserted == []
+
+
+def test_a_bot_unreachable_long_after_starting_is_reported(no_real_webhooks):
+    """The grace must expire. A bot that has been up an hour and still is not
+    serving is not booting."""
+    c = Client(bots=[bot(status="unreachable", uptime_seconds=3600)])
+    assert watchdog.sweep(c) == 1
+    assert c.inserted[0][1]["kind"] == "not_trading"
+
+
+def test_a_freshly_started_but_stopped_bot_is_still_reported(no_real_webhooks):
+    """The grace covers "not serving yet", not "serving and refusing to trade".
+    A bot reporting stopped holds positions with no stop-loss on them, and that
+    is true however recently it started."""
+    c = Client(bots=[bot(status="stopped", uptime_seconds=20)])
+    assert watchdog.sweep(c) == 1
+    assert c.inserted[0][1]["kind"] == "not_trading"
+
+
+def test_an_unknown_uptime_does_not_silence_the_check(no_real_webhooks):
+    """Missing started_at must fail towards reporting. Silence should never be
+    the default when the evidence is absent."""
+    c = Client(bots=[bot(status="unreachable", uptime_seconds=None)])
+    assert watchdog.sweep(c) == 1
+
+
+def test_open_positions_are_counted_for_the_alert(no_real_webhooks):
+    """trade_archive held closed trades only, so this count was always zero and
+    the sentence that makes an outage urgent could never appear."""
+    c = Client(bots=[bot(health="offline", open_trades=6)])
+    watchdog.sweep(c)
+    assert "6 position(s)" in c.inserted[0][1]["detail"]
 
 
 def test_one_outage_opens_one_incident(no_real_webhooks):
