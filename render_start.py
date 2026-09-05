@@ -180,22 +180,6 @@ config = {
         {"method": "VolatilityFilter", "lookback_days": 10, "min_volatility": 0.02,
          "max_volatility": 0.75, "refresh_period": 3600},
     ],
-    # Circuit breakers. There were none: nothing stopped the bot re-entering a
-    # pair it had just been stopped out of, or trading on through a drawdown.
-    # These are freqtrade's own, configured as v3's config asks.
-    "protections": [
-        # Do not immediately re-enter a pair that just exited. The pullback
-        # setup can still read as valid on the candle after a stop-out.
-        {"method": "CooldownPeriod", "stop_duration_candles": 3},
-        # Stop trading entirely after a 10% drawdown over the last 60 candles.
-        # The one that limits how bad a bad week gets.
-        {"method": "MaxDrawdown", "lookback_period_candles": 60, "trade_limit": 10,
-         "stop_duration_candles": 12, "max_allowed_drawdown": 0.1},
-        # Three stop-losses inside 24 candles means the regime is not what the
-        # strategy assumes. Pause rather than keep paying to find out.
-        {"method": "StoplossGuard", "lookback_period_candles": 24, "trade_limit": 3,
-         "stop_duration_candles": 12, "only_per_pair": False},
-    ],
     "edge": {"enabled": False},
     "api_server": {
         "enabled": True,

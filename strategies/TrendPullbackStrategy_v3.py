@@ -60,6 +60,27 @@ class TrendPullbackStrategy_v3(IStrategy):
 
     startup_candle_count = 220
 
+    # Circuit breakers, from config_v3.json. They live here rather than in the
+    # config because freqtrade 2026.7 rejects a `protections` key outright --
+    # "DEPRECATED: Setting 'protections' in the configuration is deprecated" is
+    # a hard configuration error, not a warning, and the bot refuses to start.
+    #
+    # Nothing previously stopped this account re-entering a pair it had just
+    # been stopped out of -- the pullback setup can still read as valid on the
+    # very next candle -- or trading straight through a drawdown. These are the
+    # only rules in the system that bound how bad a bad week gets.
+    protections = [
+        # A pair that just exited is not a fresh setup three candles later.
+        {"method": "CooldownPeriod", "stop_duration_candles": 3},
+        # Stop entirely after a 10% drawdown across the last 60 candles.
+        {"method": "MaxDrawdown", "lookback_period_candles": 60, "trade_limit": 10,
+         "stop_duration_candles": 12, "max_allowed_drawdown": 0.1},
+        # Three stop-losses inside 24 candles says the regime is not the one
+        # this strategy assumes. Pause instead of paying to keep finding out.
+        {"method": "StoplossGuard", "lookback_period_candles": 24, "trade_limit": 3,
+         "stop_duration_candles": 12, "only_per_pair": False},
+    ]
+
     ema_fast = IntParameter(20, 60, default=50, space="buy")
     ema_slow = IntParameter(150, 250, default=200, space="buy")
     rsi_buy_threshold = IntParameter(35, 50, default=45, space="buy")
