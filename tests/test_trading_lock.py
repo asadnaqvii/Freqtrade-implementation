@@ -168,7 +168,7 @@ def test_the_incumbent_is_asked_to_stand_down(monkeypatch, server):
     assert incumbent["acquire_trading_lock"]("postgresql://x/y", "bot") is True
 
     yielded = []
-    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
+    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02, grace_seconds=0)
 
     # Real clock on both sides: the handshake is a race between two threads, and
     # a fake clock on one of them removes the very interleaving under test.
@@ -200,7 +200,7 @@ def test_the_watcher_stops_when_the_lock_is_gone(monkeypatch, server):
     ns = load_lock_module(monkeypatch, stub(server))
     ns["_trading_lock_conn"] = None
     called = []
-    ns["watch_for_takeover"]("bot", lambda: called.append(True), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda: called.append(True), poll_seconds=0.02, grace_seconds=0)
     import time as real_time
 
     real_time.sleep(0.2)
@@ -324,7 +324,7 @@ def test_the_watcher_survives_a_dropped_query_and_still_stands_down(monkeypatch,
     conn.cursor = flaky
 
     yielded = []
-    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
+    incumbent["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02, grace_seconds=0)
 
     import time as real_time
 
@@ -468,7 +468,7 @@ def test_the_watcher_says_which_ending_it_wants(monkeypatch):
     server.try_lock(wanted_key, waiter)
 
     seen = []
-    ns["watch_for_takeover"]("bot", lambda reason: seen.append(reason), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda reason: seen.append(reason), poll_seconds=0.02, grace_seconds=0)
 
     import time as real_time
     for _ in range(200):
@@ -476,6 +476,85 @@ def test_the_watcher_says_which_ending_it_wants(monkeypatch):
             break
         real_time.sleep(0.02)
     assert seen == ["takeover"]
+
+
+def test_a_dead_predecessors_flag_does_not_look_like_a_takeover(monkeypatch):
+    """The 2026-09-05 outage, in one test.
+
+    An OOM kill left the previous process's wanted-lock flag still held --
+    Postgres does not reap a dead backend's advisory locks instantly. The
+    replacement took the trading lock, saw the flag, read its own dead ancestor
+    as a newcomer asking to take over, and stood down 67 seconds after
+    starting: trading stopped, the heartbeat stopped with it, and a live
+    process sat on four positions managing none of them, invisible to every
+    dashboard. Twelve hours before anyone looked.
+
+    Inside the boot grace a held flag must be ignored. No replacement for this
+    process can exist that soon; the flag belongs to what it just replaced.
+    """
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    ns["_trading_lock_conn"] = stub(server).connect()
+
+    _, wanted_key = ns["_lock_keys"]("bot")
+    corpse = stub(server).connect()          # the OOM-killed predecessor
+    server.try_lock(wanted_key, corpse)      # whose flag is not yet reaped
+
+    yielded = []
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason),
+                             poll_seconds=0.02, grace_seconds=5)
+
+    import time as real_time
+    real_time.sleep(0.5)                     # many polls inside the grace
+    assert yielded == [], "it stood down for a flag its own predecessor left"
+
+
+def test_one_sighting_of_the_flag_is_not_enough(monkeypatch):
+    """Past the grace, a single reading still is not proof. A real replacement
+    holds the flag until it gets the lock, so it is there on the next poll too;
+    a dying connection's is gone within seconds."""
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    ns["_trading_lock_conn"] = stub(server).connect()
+
+    _, wanted_key = ns["_lock_keys"]("bot")
+    corpse = stub(server).connect()
+    server.try_lock(wanted_key, corpse)
+
+    yielded = []
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason),
+                             poll_seconds=0.05, grace_seconds=0, confirmations=3)
+
+    import time as real_time
+    real_time.sleep(0.06)                    # one poll only
+    assert yielded == [], "one sighting was treated as a takeover"
+    server.drop(corpse)                      # the flag is reaped
+    real_time.sleep(0.3)
+    assert yielded == [], "a flag that went away must not still stand it down"
+
+
+def test_a_replacement_that_keeps_asking_is_still_obeyed(monkeypatch):
+    """The confirmations must not become a way to ignore a real deploy. A
+    replacement holds the flag until it gets the lock, so it survives every
+    poll -- and the incumbent still has to give way, or the deploy hangs."""
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    ns["_trading_lock_conn"] = stub(server).connect()
+
+    _, wanted_key = ns["_lock_keys"]("bot")
+    replacement = stub(server).connect()
+    server.try_lock(wanted_key, replacement)   # and keeps holding it
+
+    yielded = []
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason),
+                             poll_seconds=0.02, grace_seconds=0)
+
+    import time as real_time
+    for _ in range(200):
+        if yielded:
+            break
+        real_time.sleep(0.02)
+    assert yielded == ["takeover"], "a genuine deploy would hang forever"
 
 
 def test_nothing_exits_on_the_normal_deploy_path():
@@ -520,7 +599,7 @@ def test_losing_the_lock_connection_stops_this_process(monkeypatch, server):
     conn.cursor = dead
 
     yielded = []
-    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02, grace_seconds=0)
 
     import time as real_time
 
@@ -553,7 +632,7 @@ def test_a_single_dropped_query_does_not_stop_trading(monkeypatch, server):
     conn.cursor = flaky
 
     yielded = []
-    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02)
+    ns["watch_for_takeover"]("bot", lambda reason: yielded.append(reason), poll_seconds=0.02, grace_seconds=0)
 
     import time as real_time
 

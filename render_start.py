@@ -248,6 +248,13 @@ _stood_down = threading.Event()
 #: the one failure notice exiting costs.
 STANDDOWN_EXIT_AFTER = 900
 
+#: How long after taking the lock to disregard the "somebody wants it" flag.
+#: Postgres releases a dead connection's advisory locks when it reaps the
+#: backend, which is not instant. Inside this window the flag is far more
+#: likely to belong to the predecessor this process just replaced than to a
+#: replacement for this process, which cannot exist yet.
+STARTUP_TAKEOVER_GRACE = 120
+
 
 def _lock_keys(name):
     """Two keys per bot: the trading lock, and a flag meaning someone wants it."""
@@ -349,7 +356,8 @@ def acquire_trading_lock(url, name, wait_seconds=300):
         time.sleep(3)
 
 
-def watch_for_takeover(name, on_yield, poll_seconds=5):
+def watch_for_takeover(name, on_yield, poll_seconds=5,
+                       grace_seconds=None, confirmations=2):
     """Stand down when a newer instance asks for the trading lock.
 
     The incumbent has to release, or a rolling deploy can never complete: the
@@ -361,9 +369,12 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
     connection died, which is a fault. They need different endings.
     """
     _, wanted_key = _lock_keys(name)
+    grace = STARTUP_TAKEOVER_GRACE if grace_seconds is None else grace_seconds
 
     def watch():
         failures = 0
+        wanted = 0
+        started_at = time.monotonic()
         while True:
             time.sleep(poll_seconds)
             conn = _trading_lock_conn
@@ -398,10 +409,33 @@ def watch_for_takeover(name, on_yield, poll_seconds=5):
                     return
                 continue
             if not free:
+                # A held wanted-flag is not proof a replacement is asking. When
+                # this process was OOM-killed on 2026-09-05 the flag its own
+                # predecessor held had not been reaped yet, so the replacement
+                # read its dead ancestor as a newcomer, stood down 67 seconds
+                # after starting, stopped trading and killed its heartbeat --
+                # leaving a live process holding four positions, managing none
+                # of them, and invisible to every dashboard. The worst state the
+                # system can be in, reached by the code meant to prevent it.
+                #
+                # A real replacement holds the flag until it gets the lock, so
+                # it is still there on the next poll. A dead connection's is
+                # gone within seconds. Requiring two consecutive sightings, and
+                # ignoring the flag entirely while the previous holder is still
+                # being reaped, tells them apart.
+                if time.monotonic() - started_at < grace:
+                    continue
+                wanted += 1
+                if wanted < confirmations:
+                    print("something holds the wanted-lock flag; confirming "
+                          "before standing down", flush=True)
+                    continue
                 print("a newer instance wants the trading lock; standing down",
                       flush=True)
                 on_yield("takeover")
                 return
+            else:
+                wanted = 0
 
     threading.Thread(target=watch, daemon=True, name="takeover").start()
 
