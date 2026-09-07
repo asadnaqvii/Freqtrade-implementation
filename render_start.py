@@ -922,19 +922,36 @@ def register_and_heartbeat():
         "last_heartbeat_at": now,
     }
 
-    bot_id = None
-    try:
-        existing = client.select_one(
-            "bot_instances", columns="id", filters={"name": f"eq.{bot_name}"}
-        )
-        if existing:
-            bot_id = existing["id"]
-            client.update("bot_instances", row, filters={"id": f"eq.{bot_id}"})
-        else:
-            bot_id = client.insert("bot_instances", row)[0]["id"]
+    def register():
+        """Create or refresh this bot's row. Returns its id, or None.
+
+        Retried from the heartbeat rather than attempted once. Registration
+        failing at boot used to be permanent: bot_id stayed None, the heartbeat
+        thread returned on its first tick, and the process traded for the rest
+        of its life with nothing reporting that it existed.
+
+        That is not hypothetical. Supabase restricted this project for exceeding
+        its egress quota on 2026-09-05 and answered 402 to everything. The bot
+        kept trading -- freqtrade talks to Postgres directly and never noticed --
+        but registration failed, so the heartbeat never started, and the
+        dashboard showed it offline for 31 hours across three restarts, long
+        after the quota problem itself was resolved.
+        """
+        try:
+            existing = client.select_one(
+                "bot_instances", columns="id", filters={"name": f"eq.{bot_name}"}
+            )
+            if existing:
+                client.update("bot_instances", row, filters={"id": f"eq.{existing['id']}"})
+                return existing["id"]
+            return client.insert("bot_instances", row)[0]["id"]
+        except Exception as exc:
+            print(f"could not register this bot: {exc}", flush=True)
+            return None
+
+    bot_id = register()
+    if bot_id:
         print(f"registered bot instance {bot_id}", flush=True)
-    except Exception as exc:
-        print(f"could not register this bot: {exc}", flush=True)
 
     _record_deployment(client, bot_id, owner_id)
 
@@ -962,17 +979,21 @@ def register_and_heartbeat():
     threading.Thread(target=build_views, daemon=True, name="views").start()
 
     def beat():
+        nonlocal bot_id
         while True:
             time.sleep(60)
-            if not bot_id:
-                return
-            # Stood down: the replacement owns this bot's row now. Carrying on
-            # would overwrite its heartbeat with this instance's dying state,
-            # so the dashboard would show the outgoing process while the
-            # incoming one does the trading.
+            # Stood down: the replacement owns this bot's row now. Checked
+            # before the retry below, so a process on its way out does not
+            # register itself back over its successor.
             if _stood_down.is_set():
                 print("stood down; stopping the heartbeat", flush=True)
                 return
+            if not bot_id:
+                bot_id = register()
+                if not bot_id:
+                    continue        # keep trying; the outage may be temporary
+                print(f"registered bot instance {bot_id} (late)", flush=True)
+                _record_deployment(client, bot_id, owner_id)
             # "running" used to be hardcoded, which made the column a statement
             # that the process exists rather than that it is trading. A bot that
             # is up, healthy and STOPPED manages no stop-loss on anything it
