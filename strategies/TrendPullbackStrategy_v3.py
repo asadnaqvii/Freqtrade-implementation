@@ -60,6 +60,16 @@ class TrendPullbackStrategy_v3(IStrategy):
 
     startup_candle_count = 220
 
+    # freqtrade only calls custom_stoploss() when this is True. It defaults to
+    # False on IStrategy, defining the method is not enough, and nothing warns
+    # you -- the bot logs "use_custom_stoploss: False" once among two dozen
+    # other startup lines and then quietly applies the flat stoploss forever.
+    #
+    # It was missing here from the day this strategy went live, so the
+    # ATR-scaled stop below, and the tightening to -0.2% after a partial exit,
+    # had never once run against real money.
+    use_custom_stoploss = True
+
     # Circuit breakers, from config_v3.json. They live here rather than in the
     # config because freqtrade 2026.7 rejects a `protections` key outright --
     # "DEPRECATED: Setting 'protections' in the configuration is deprecated" is

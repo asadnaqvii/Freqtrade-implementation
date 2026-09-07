@@ -57,6 +57,16 @@ class TrendPullbackStrategy(IStrategy):
 
     startup_candle_count = 220
 
+    # freqtrade only calls custom_stoploss() when this is True. It defaults to
+    # False on IStrategy, defining the method is not enough, and nothing warns
+    # you -- the bot logs "use_custom_stoploss: False" once among two dozen
+    # other startup lines and then quietly applies the flat stoploss forever.
+    #
+    # It was missing here from the day this strategy went live, so the
+    # ATR-scaled stop below, and the tightening to -0.2% after a partial exit,
+    # had never once run against real money.
+    use_custom_stoploss = True
+
     # Tunable via hyperopt
     ema_fast = IntParameter(20, 60, default=50, space="buy")
     ema_slow = IntParameter(150, 250, default=200, space="buy")
