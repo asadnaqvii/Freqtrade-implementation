@@ -47,6 +47,39 @@ class BotNotConfigured(BotError):
     """This service has no bot address or login."""
 
 
+
+def _upstream_message(response: Any) -> str:
+    """A sentence describing a failed call, never a web page.
+
+    A 502 on the private network does not come from the bot at all -- it is the
+    platform's own proxy saying it could not reach the service, and its body is
+    a full HTML error page. That body was being pasted into the error message
+    and rendered in the dashboard, so a thirty-second restart during a deploy
+    filled the Live bot panel with several screens of minified CSS and base64
+    font data. It looked like the system had come apart; it had not.
+
+    Anything that is not JSON is the infrastructure talking, so it is described
+    rather than quoted.
+    """
+    status = response.status_code
+    content_type = (response.headers.get("content-type") or "").lower()
+
+    # 502/503/504 on the private network mean the service is not accepting
+    # connections right now, which during a deploy is expected and brief.
+    if status in (502, 503, 504):
+        return (f"the bot is not answering right now (HTTP {status}). "
+                "It is most likely restarting after a deploy; this usually "
+                "clears within a minute.")
+
+    if "json" not in content_type:
+        # Something between here and the bot answered, and it was not the bot.
+        return (f"an intermediary returned HTTP {status} instead of the bot "
+                f"({content_type or 'unknown content type'}). The bot itself "
+                "may be fine; this is the path to it that failed.")
+
+    body = " ".join(response.text.split())[:200]
+    return f"the bot returned {status}: {body}"
+
 class BotClient:
     #: Read-only endpoints. Safe to call on any page load.
     READS = {
@@ -127,7 +160,7 @@ class BotClient:
                 "be identical on the app and bot services."
             )
         if response.status_code >= 400:
-            raise BotError(f"the bot returned {response.status_code}: {response.text[:200]}")
+            raise BotError(_upstream_message(response))
         try:
             return response.json()
         except ValueError as exc:
