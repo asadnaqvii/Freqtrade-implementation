@@ -1,0 +1,3271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Freqtrade Platform</title>
+<style>
+  /* Instrument-panel palette: a near-black blue slate ground, one amber accent
+     for anything interactive, and profit/loss colours that are deliberately NOT
+     the accent -- if green means both "button" and "up", every number reads as a
+     control. Light is the complete set; dark redefines tokens only. */
+  :root {
+    --bg:#F4F6F9; --panel:#FFFFFF; --panel-2:#EDF1F6; --panel-3:#E3E9F0;
+    --line:#DBE2EA; --line-soft:#E9EEF3;
+    --text:#111A23; --text-2:#3C4956; --muted:#5F6E7D;
+    --accent:#9A6B14; --accent-2:#8A5F10; --accent-soft:#9A6B1418;
+    --pos:#1B7A4B; --neg:#B23E33; --warn:#8A6512; --info:#2C6C9E;
+    --pos-soft:#1B7A4B18; --neg-soft:#B23E3318; --warn-soft:#8A651218; --info-soft:#2C6C9E18;
+    --radius:11px; --radius-sm:7px;
+    --shadow:0 1px 2px rgba(17,26,35,.05), 0 8px 24px rgba(17,26,35,.06);
+    --grid:#DBE2EA;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0A0E13; --panel:#121821; --panel-2:#19212B; --panel-3:#212B36;
+      --line:#242E3A; --line-soft:#1C242E;
+      --text:#DFE7EF; --text-2:#B2C0CD; --muted:#78879A;
+      --accent:#D9A441; --accent-2:#E8B860; --accent-soft:#D9A4411F;
+      --pos:#3FAE72; --neg:#D2564B; --warn:#D9A441; --info:#5B96C7;
+      --pos-soft:#3FAE721F; --neg-soft:#D2564B1F; --warn-soft:#D9A4411F; --info-soft:#5B96C71F;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.28);
+      --grid:#212B36;
+    }
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono, .num, pre, code { font-family:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace; }
+  .num { font-variant-numeric:tabular-nums; }
+
+  header {
+    display:flex; align-items:center; gap:14px; padding:13px 22px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+    position:sticky; top:0; z-index:20;
+  }
+  header h1 {
+    font-size:14px; margin:0; font-weight:650; letter-spacing:-.01em;
+    display:flex; align-items:center; gap:9px;
+  }
+  header h1::before {
+    content:""; width:9px; height:9px; border-radius:2px; background:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-soft);
+  }
+  header .spacer { flex:1; }
+
+  nav {
+    display:flex; gap:2px; padding:0 22px; border-bottom:1px solid var(--line);
+    background:var(--panel); position:sticky; top:51px; z-index:19; overflow-x:auto;
+  }
+  nav button {
+    background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
+    padding:11px 14px; cursor:pointer; font-size:13px; font-weight:550; white-space:nowrap;
+  }
+  nav button:hover { color:var(--text); }
+  nav button.active { color:var(--text); border-bottom-color:var(--accent); }
+
+  main { padding:22px; max-width:1320px; margin:0 auto; }
+  section { display:none; } section.active { display:block; }
+
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:18px; margin-bottom:16px; box-shadow:var(--shadow);
+  }
+  .card h2 {
+    margin:0 0 4px; font-size:12px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .card p.hint { margin:0 0 14px; color:var(--muted); font-size:12.5px; }
+  .card h3.sub {
+    margin:18px 0 4px; padding-top:14px; border-top:1px solid var(--line-soft);
+    font-size:11px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .locks { display:flex; flex-direction:column; gap:6px; }
+  .lock {
+    display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+    padding:7px 9px; border-radius:var(--radius-sm);
+    background:var(--warn-soft); border:1px solid var(--line);
+  }
+  .lock b { font-size:12.5px; }
+  .lock .why { color:var(--muted); font-size:11.5px; flex:1; min-width:90px; }
+  .lock .until { font-size:11.5px; color:var(--warn); font-variant-numeric:tabular-nums; }
+  /* The Live view's two columns. FreqUI keeps its pane at a fixed narrow width
+     and lets the chart take the rest; below 1150px there is not enough room for
+     both, so they stack -- main column first, because the chart is the point. */
+  .livegrid { display:grid; gap:16px; align-items:start; }
+  .livepane, .livemain { display:flex; flex-direction:column; gap:16px; min-width:0; }
+  .livepane .card, .livemain .card { margin:0; }
+  @media (min-width:1150px) {
+    .livegrid { grid-template-columns:minmax(290px, 330px) minmax(0, 1fr); }
+    /* Long panels in a narrow column would otherwise push the chart's whole
+       column down past the fold. */
+    /* Deliberately not sticky: pinning the pane needs a height cap, and the cap
+       slices a card in half the moment the pane grows -- which one more held
+       currency or one more locked pair does. */
+    .livepane { align-self:start; }
+  }
+  @media (max-width:1149px) {
+    .livepane { order:2; }
+    .livemain { order:1; }
+  }
+
+  .holding {
+    display:grid; grid-template-columns:1fr auto; gap:0 10px;
+    padding:8px 0; border-top:1px solid var(--line-soft);
+  }
+  .holding:first-child { border-top:none; padding-top:0; }
+  .holding b { font-size:13px; }
+  .holding .tot { font-size:13px; font-variant-numeric:tabular-nums; }
+  .holding .split { grid-column:1 / -1; font-size:11px; color:var(--muted);
+                    font-variant-numeric:tabular-nums; }
+
+  .btn.armed {
+    border-color:var(--warn); color:var(--warn); background:var(--warn-soft); font-weight:600;
+  }
+  .ctl-confirm {
+    margin:-8px 0 16px; padding:10px 12px; border-radius:var(--radius-sm);
+    background:var(--warn-soft); border:1px solid var(--warn);
+    color:var(--text); font-size:12.5px; white-space:pre-line;
+  }
+
+  .chip-pair.locked {
+    background:var(--panel-2); border-color:var(--line); color:var(--muted);
+    text-decoration:line-through; text-decoration-thickness:1px;
+  }
+  .card h2 + .scroll, .card h2 + table { margin-top:12px; }
+
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; font-weight:550; }
+  input, select, textarea, button.btn {
+    width:100%; padding:8px 10px; background:var(--panel-2); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--radius-sm); font:inherit; font-size:13px;
+  }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:1px;
+  }
+  textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; min-height:150px; }
+  button.btn { cursor:pointer; width:auto; font-weight:550; transition:background .12s, border-color .12s; }
+  button.btn:hover:not(:disabled) { background:var(--panel-3); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#1A1206; }
+  button.primary:hover:not(:disabled) { background:var(--accent-2); border-color:var(--accent-2); }
+  button.danger { border-color:var(--neg); color:var(--neg); background:var(--neg-soft); }
+  button.danger:hover:not(:disabled) { background:var(--neg); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.tiny { padding:4px 9px; font-size:11.5px; }
+
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:150px; }
+  .actions { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  .grid3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); gap:16px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line-soft); white-space:nowrap; }
+  th {
+    color:var(--muted); font-weight:600; font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.07em; background:var(--panel-2); position:sticky; top:0;
+  }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:hover td { background:var(--panel-2); }
+  td.r, th.r { text-align:right; }
+  .scroll { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius-sm); }
+
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; }
+  .ok{background:var(--pos-soft);color:var(--pos)}
+  .warn{background:var(--warn-soft);color:var(--warn)}
+  .bad{background:var(--neg-soft);color:var(--neg)}
+  .neutral{background:var(--panel-3);color:var(--muted)}
+  .info{background:var(--info-soft);color:var(--info)}
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+
+  /* ── live terminal ─────────────────────────────────────── */
+  .statusbar {
+    display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 16px;
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    margin-bottom:16px; box-shadow:var(--shadow);
+  }
+  .statusbar .sb {
+    display:inline-flex; align-items:baseline; gap:7px; padding:4px 11px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:999px; font-size:12px;
+  }
+  .statusbar .sb b { font-weight:600; font-variant-numeric:tabular-nums; }
+  .statusbar .sb span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; flex:none; }
+  .dot.up{background:var(--pos);box-shadow:0 0 0 3px var(--pos-soft)}
+  .dot.down{background:var(--neg);box-shadow:0 0 0 3px var(--neg-soft)}
+  .dot.idle{background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft)}
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:12px; margin-bottom:16px; }
+  /* Eight tiles: let them fill four to a row rather than seven and a stray. */
+  @media (min-width:1000px) { .kpis { grid-template-columns:repeat(4, 1fr); } }
+  .kpi {
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px 16px; box-shadow:var(--shadow); min-width:0;
+  }
+  .kpi .k {
+    font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+    font-weight:600; margin-bottom:5px;
+  }
+  .kpi .v { font-size:23px; font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums;
+            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .kpi .s { font-size:11.5px; color:var(--muted); margin-top:3px; font-variant-numeric:tabular-nums; }
+
+  .bar { height:6px; border-radius:3px; background:var(--panel-3); overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; border-radius:3px; background:var(--accent); }
+
+  .chart { width:100%; height:auto; display:block; overflow:visible; }
+  .chart .gl { stroke:var(--grid); stroke-width:1; }
+  .chart .lbl { fill:var(--muted); font-size:9.5px; font-family:ui-monospace,monospace; }
+  .chart .ln { fill:none; stroke:var(--accent); stroke-width:1.8; stroke-linejoin:round; }
+  .chart .zero { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
+
+  /* Collapsible sections: the heading is the control, so it has to look like one. */
+  .sec-head {
+    display:flex; align-items:center; gap:8px; width:100%; background:none;
+    border:none; border-top:1px solid var(--line-soft); padding:16px 0 6px;
+    font:inherit; font-size:13px; font-weight:600; color:var(--text);
+    cursor:pointer; text-align:left;
+  }
+  .sec-head:hover { color:var(--accent); }
+  .sec-head .caret {
+    display:inline-block; width:9px; flex:none; color:var(--muted);
+    transition:transform .15s ease;
+  }
+  .sec-head[aria-expanded="false"] .caret { transform:rotate(-90deg); }
+  .sec-body[hidden] { display:none; }
+
+  .picker { position:relative; }
+  .picker input { margin-top:4px; }
+  .options {
+    position:absolute; z-index:30; left:0; right:0; top:100%; margin-top:4px;
+    max-height:230px; overflow-y:auto; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius-sm); box-shadow:var(--shadow);
+  }
+  .options button {
+    display:flex; justify-content:space-between; gap:10px; width:100%; text-align:left;
+    background:none; border:none; border-bottom:1px solid var(--line-soft);
+    padding:7px 11px; font:inherit; font-size:12.5px; color:var(--text); cursor:pointer;
+  }
+  .options button:hover, .options button:focus-visible { background:var(--panel-2); }
+  .options button:last-child { border-bottom:none; }
+  .options .q { color:var(--muted); font-size:11.5px; }
+  .chip-pair {
+    display:inline-flex; align-items:center; gap:6px; padding:3px 6px 3px 9px;
+    background:var(--accent-soft); border:1px solid var(--accent-line);
+    border-radius:999px; font-size:11.5px; font-weight:550; color:var(--accent);
+  }
+  .chip-pair button {
+    background:none; border:none; color:inherit; cursor:pointer; font-size:14px;
+    line-height:1; padding:0 2px; opacity:.75;
+  }
+  .chip-pair button:hover { opacity:1; }
+
+  .chartwrap { position:relative; }
+  .chartwrap .tip {
+    position:absolute; top:4px; pointer-events:none; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius-sm); padding:6px 9px;
+    font-size:11.5px; box-shadow:var(--shadow); white-space:nowrap; z-index:5;
+    font-variant-numeric:tabular-nums;
+  }
+  .chart .cross { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }
+  /* Trade outcomes are printed straight onto the candles, so they get a halo in
+     the panel colour rather than a label box that would hide the price. */
+  .chart .lbl.on-plot {
+    font-weight:600; paint-order:stroke fill;
+    stroke:var(--panel); stroke-width:3px; stroke-linejoin:round;
+  }
+
+  /* Candle legend: the marks mean four different things, and a chart that needs
+     a paragraph to explain its symbols has not finished being a chart. */
+  .candle-key {
+    display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:10px;
+    font-size:11.5px; color:var(--muted);
+  }
+  .candle-key span { display:inline-flex; align-items:center; gap:6px; }
+  .candle-key i { display:inline-block; width:10px; height:10px; flex:none; }
+  .candle-key .k-tri {
+    width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent;
+    border-bottom:8px solid var(--pos);
+  }
+  .candle-key .k-x {
+    background:
+      linear-gradient(45deg, transparent 42%, var(--info) 42%, var(--info) 58%, transparent 58%),
+      linear-gradient(-45deg, transparent 42%, var(--info) 42%, var(--info) 58%, transparent 58%);
+  }
+  .candle-key .k-dot { border-radius:50%; }
+  .candle-key .k-dot.pos { background:var(--pos); }
+  .candle-key .k-dot.neg { background:var(--neg); }
+  .candle-key .k-band { background:var(--accent); opacity:.25; width:16px; border-radius:2px; }
+
+  table.heat { border-collapse:separate; border-spacing:2px; }
+  table.heat th, table.heat td { border:none; padding:0; }
+  table.heat th.hm {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    background:none; text-align:center; padding-bottom:3px;
+  }
+  table.heat td.hm {
+    text-align:center; padding:7px 9px; border-radius:5px; font-size:11.5px;
+    font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; min-width:46px;
+  }
+  table.heat td.empty-cell { background:var(--panel-2); opacity:.4; }
+  table.heat th.yr, table.heat td.yr {
+    font-size:11.5px; font-weight:600; color:var(--text); background:none;
+    padding-right:10px; white-space:nowrap;
+  }
+
+  .progress {
+    height:6px; border-radius:3px; background:var(--panel-3); overflow:hidden;
+    min-width:110px; margin-top:4px;
+  }
+  .progress > i { display:block; height:100%; border-radius:3px; background:var(--accent);
+                  transition:width .4s ease; }
+
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .chips .btn.active {
+    background:var(--accent-soft); border-color:var(--accent); color:var(--accent); font-weight:600;
+  }
+
+  .ranklist { display:flex; flex-direction:column; gap:8px; }
+  .rank { display:grid; grid-template-columns:1fr auto; gap:4px 10px; font-size:12.5px; }
+  .rank .nm { font-weight:550; }
+  .rank .vl { font-variant-numeric:tabular-nums; font-family:ui-monospace,monospace; }
+  .rank .track { grid-column:1/-1; height:5px; border-radius:3px; background:var(--panel-3); overflow:hidden; }
+  .rank .track > i { display:block; height:100%; border-radius:3px; }
+
+  .check { border-left:3px solid var(--line); padding:9px 12px; margin-bottom:8px;
+           background:var(--panel-2); border-radius:0 var(--radius-sm) var(--radius-sm) 0; }
+  .check.passed{border-left-color:var(--pos)} .check.failed,.check.error{border-left-color:var(--neg)}
+  .check.warning{border-left-color:var(--warn)} .check.skipped{border-left-color:var(--muted)}
+  .check .t { font-weight:600; font-size:12.5px; }
+  .check .m { color:var(--muted); font-size:12px; margin-top:2px; }
+  .check .r { margin-top:6px; font-size:12px; padding:7px 9px; background:var(--bg);
+              border-radius:6px; border:1px solid var(--line); }
+
+  pre { background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius-sm);
+        padding:12px; overflow:auto; font-size:11.5px; max-height:380px; margin:0; }
+  .muted { color:var(--muted); }
+  .empty { color:var(--muted); padding:22px; text-align:center; font-size:13px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:12.5px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; font-variant-numeric:tabular-nums; }
+
+  #toast { position:fixed; right:18px; bottom:18px; background:var(--panel); border:1px solid var(--line);
+           border-left:3px solid var(--accent); padding:11px 15px; border-radius:var(--radius-sm);
+           max-width:420px; display:none; box-shadow:var(--shadow); font-size:13px; z-index:100; }
+  #toast.bad { border-left-color:var(--neg); }
+  #auth { max-width:380px; margin:70px auto; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+</style>
+</head>
+<body>
+
+<div id="auth" class="card" hidden>
+  <h2>Sign in</h2>
+  <p class="hint">Uses your Supabase account. Everything you create is visible only to you.</p>
+  <label for="email">Email</label><input id="email" type="email" autocomplete="username">
+  <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
+  <div class="actions">
+    <button class="btn primary" id="signin">Sign in</button>
+    <button class="btn" id="signup">Create account</button>
+  </div>
+</div>
+
+<div id="app" hidden>
+<header>
+  <h1>Freqtrade Platform</h1>
+  <span class="spacer"></span>
+  <span class="muted" id="whoami"></span>
+  <button class="btn" id="signout">Sign out</button>
+</header>
+
+<nav>
+  <button data-tab="builder" class="active">Strategy builder</button>
+  <button data-tab="backtests">Backtesting</button>
+  <button data-tab="wallets">Verification</button>
+  <button data-tab="bots">Live bot</button>
+</nav>
+
+<main>
+  <!-- ── Builder ───────────────────────────────────────────── -->
+  <section id="builder" class="active">
+    <div class="card">
+      <h2>Build a strategy</h2>
+      <p class="hint">Pick indicators and write rules over them. The platform compiles this into a
+        real freqtrade strategy &mdash; you never write Python, and a spec can only reference
+        indicators from the catalog.</p>
+      <div class="row">
+        <div><label for="s-name">Name</label><input id="s-name" placeholder="My pullback strategy"></div>
+        <div><label for="s-class">Class name</label><input id="s-class" placeholder="MyPullback"></div>
+        <div><label for="s-tf">Timeframe</label><select id="s-tf"></select></div>
+      </div>
+      <label for="s-spec">Spec</label>
+      <textarea id="s-spec" spellcheck="false"></textarea>
+      <div class="actions">
+        <button class="btn" id="b-compile">Compile &amp; preview</button>
+        <button class="btn primary" id="b-save">Save as new strategy</button>
+        <button class="btn" id="b-example">Load example</button>
+      </div>
+    </div>
+    <div class="card" id="compile-out" hidden>
+      <h2>Generated strategy</h2>
+      <div id="compile-status"></div>
+      <pre id="compile-code"></pre>
+    </div>
+    <div class="card">
+      <h2>Your strategies</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Name</th><th>Class</th><th>Version</th><th>Compiles</th><th>Updated</th><th></th>
+      </tr></thead><tbody id="strategy-rows"><tr><td colspan="6" class="empty">Nothing yet</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Indicator catalog</h2>
+      <p class="hint">Everything a spec may use. Each indicator lists the dataframe columns it produces.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Key</th><th>Category</th><th>Parameters</th><th>Produces</th>
+      </tr></thead><tbody id="catalog-rows"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ── Backtesting ───────────────────────────────────────── -->
+  <section id="backtests">
+    <div class="card">
+      <h2>Run a backtest</h2>
+      <p class="hint">Runs freqtrade's own backtesting engine. Any exchange, any pairs, any quote
+        currency, any past window the venue has history for.</p>
+      <div class="row">
+        <div><label for="bt-strategy">Strategy</label><select id="bt-strategy"></select></div>
+        <div><label for="bt-exchange">Exchange</label><select id="bt-exchange"></select></div>
+        <div><label for="bt-tf">Timeframe</label><select id="bt-tf"></select></div>
+      </div>
+      <div class="row">
+        <div style="flex:2;min-width:280px">
+          <label for="bt-pair-search">Pairs</label>
+          <div class="picker">
+            <div class="chips" id="bt-pair-chips"></div>
+            <input id="bt-pair-search" placeholder="Type to search, click to add…" autocomplete="off">
+            <div id="bt-pair-list" class="options" hidden></div>
+          </div>
+          <p class="hint" id="bt-pair-note" style="margin:5px 0 0"></p>
+        </div>
+        <div><label for="bt-stakecur">Quote currency</label><select id="bt-stakecur"></select></div>
+      </div>
+      <div class="row">
+        <div><label for="bt-from">From</label><input id="bt-from" type="date"></div>
+        <div><label for="bt-to">To</label><input id="bt-to" type="date"></div>
+        <div>
+          <label>Or pick a span</label>
+          <div class="chips" id="bt-presets">
+            <button class="btn tiny" data-years="1">1 year</button>
+            <button class="btn tiny" data-years="2">2 years</button>
+            <button class="btn tiny" data-years="3">3 years</button>
+            <button class="btn tiny" data-years="5">5 years</button>
+            <button class="btn tiny" data-years="10">10 years</button>
+            <button class="btn tiny" data-years="0">Everything</button>
+          </div>
+        </div>
+      </div>
+      <div class="actions" style="margin-top:6px">
+        <button class="btn" id="bt-history">How far back can these pairs go?</button>
+        <span class="muted" id="bt-history-out" style="font-size:12.5px;align-self:center"></span>
+      </div>
+      <p id="bt-estimate" class="muted" style="font-size:12.5px;margin:6px 0 0"></p>
+      <div class="row">
+        <div>
+          <label for="bt-balance">Starting balance</label>
+          <input id="bt-balance" type="number" value="1000">
+          <div class="chips" data-preset-for="bt-balance">
+            <button class="btn tiny" data-value="1000">1k</button>
+            <button class="btn tiny" data-value="5000">5k</button>
+            <button class="btn tiny" data-value="10000">10k</button>
+            <button class="btn tiny" data-value="100000">100k</button>
+          </div>
+        </div>
+        <div>
+          <label for="bt-stake">Stake per trade</label>
+          <input id="bt-stake" type="number" value="100">
+          <div class="chips" data-preset-for="bt-stake">
+            <button class="btn tiny" data-value="10">10</button>
+            <button class="btn tiny" data-value="50">50</button>
+            <button class="btn tiny" data-value="100">100</button>
+            <button class="btn tiny" data-value="500">500</button>
+          </div>
+        </div>
+        <div>
+          <label for="bt-slots">Max open trades</label>
+          <input id="bt-slots" type="number" value="3">
+          <div class="chips" data-preset-for="bt-slots">
+            <button class="btn tiny" data-value="1">1</button>
+            <button class="btn tiny" data-value="3">3</button>
+            <button class="btn tiny" data-value="5">5</button>
+            <button class="btn tiny" data-value="10">10</button>
+          </div>
+        </div>
+      </div>
+      <div class="actions"><button class="btn primary" id="bt-run">Queue backtest</button>
+        <button class="btn" id="bt-refresh">Refresh</button></div>
+    </div>
+    <div class="card" id="bt-detail" hidden>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Result detail</h2>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn tiny" id="bt-collapse-all">Collapse all</button>
+        <button class="btn tiny" id="bt-detail-close">Close</button>
+      </div>
+      <p class="hint" id="bt-detail-title"></p>
+
+      <div id="bt-coverage"></div>
+      <div class="kpis" id="bt-metrics" style="margin-bottom:20px"></div>
+
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="account-balance"><span class="caret">&#9660;</span>Account balance</button>
+      <div class="sec-body" id="sec-account-balance">
+      <p class="hint">Every candle of the run, not just the trades.</p>
+      <div id="bt-equity"><div class="empty">&mdash;</div></div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="how-far-below-the-peak"><span class="caret">&#9660;</span>How far below the peak</button>
+      <div class="sec-body" id="sec-how-far-below-the-peak">
+      <p class="hint">The same period, drawn as depth under the high-water mark. This is the
+        part you would have had to sit through.</p>
+      <div id="bt-drawdown"></div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="month-by-month"><span class="caret">&#9660;</span>Month by month</button>
+      <div class="sec-body" id="sec-month-by-month">
+      <div id="bt-heatmap"><div class="empty">&mdash;</div></div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="is-this-result-worth-believing"><span class="caret">&#9660;</span>Is this result worth believing?</button>
+      <div class="sec-body" id="sec-is-this-result-worth-believing">
+      <p class="hint">Separate question from whether it made money. A backtest always
+        produces a number; this says whether the test was capable of telling you anything.</p>
+      <div id="bt-verdict"><div class="empty">Pick a result below</div></div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="return-by-period"><span class="caret">&#9660;</span>Return by period</button>
+      <div class="sec-body" id="sec-return-by-period">
+      <div class="chips" id="bt-period">
+        <button class="btn tiny" data-period="day">Daily</button>
+        <button class="btn tiny" data-period="week">Weekly</button>
+        <button class="btn tiny active" data-period="month">Monthly</button>
+        <button class="btn tiny" data-period="quarter">Quarterly</button>
+        <button class="btn tiny" data-period="year">Annual</button>
+      </div>
+      <div id="bt-period-summary"></div>
+      <div id="bt-period-chart"></div>
+      <div class="scroll" style="margin-top:12px"><table><thead><tr>
+        <th>Period</th><th class="r">Trades</th><th class="r">W/L</th>
+        <th class="r">Profit</th><th class="r">Return on account</th>
+        <th class="r">Invested</th><th class="r">Return on capital</th>
+        <th class="r">Balance</th>
+      </tr></thead><tbody id="bt-period-rows">
+        <tr><td colspan="8" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="by-pair"><span class="caret">&#9660;</span>By pair</button>
+      <div class="sec-body" id="sec-by-pair">
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th class="r">Trades</th><th class="r">W/L</th>
+        <th class="r">Profit</th><th class="r">%</th><th></th>
+      </tr></thead><tbody id="bt-pair-rows">
+        <tr><td colspan="6" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+
+      <div class="grid3" style="margin-top:22px">
+        <div>
+          <h3 style="margin:0 0 4px;font-size:13px">Spread of trade results</h3>
+          <p class="hint">A few huge wins with many small losses is a different
+            strategy from a steady grind, and the total hides which.</p>
+          <div id="bt-dist"></div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 4px;font-size:13px">Why trades closed</h3>
+          <p class="hint">Mostly stop-loss means it is being stopped out, not exiting.</p>
+          <div id="bt-reasons" class="ranklist"><div class="empty">&mdash;</div></div>
+        </div>
+      </div>
+
+      </div>
+      <button class="sec-head" type="button" aria-expanded="true"
+              data-sec="trades"><span class="caret">&#9660;</span>Trades</button>
+      <div class="sec-body" id="sec-trades">
+      <p class="hint" id="bt-trades-note"></p>
+      <div class="scroll"><table><thead><tr>
+        <th>Pair</th><th>Opened</th><th>Closed</th><th class="r">Held</th>
+        <th class="r">Entry</th><th class="r">Exit</th><th class="r">Profit</th>
+        <th class="r">%</th><th>Reason</th>
+      </tr></thead><tbody id="bt-trades">
+        <tr><td colspan="9" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Results</h2>
+      <div class="scroll"><table><thead><tr>
+        <th>Strategy</th><th>Window</th><th class="r">Trades</th><th class="r">Win rate</th>
+        <th class="r">Profit</th><th class="r">Drawdown</th><th class="r">Sharpe</th>
+        <th>Best</th><th>Worst</th><th></th>
+      </tr></thead><tbody id="run-rows"><tr><td colspan="10" class="empty">No results yet</td></tr></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Queue</h2>
+      <p class="hint">Work still outstanding, plus anything that failed. Completed runs
+        move to Results above.</p>
+      <div class="scroll"><table><thead><tr>
+        <th>Status</th><th>Strategy</th><th>Pairs</th><th>Range</th><th>Progress</th><th>Queued</th><th></th>
+      </tr></thead><tbody id="job-rows"><tr><td colspan="7" class="empty">No jobs</td></tr></tbody></table></div>
+      <div class="actions">
+        <button class="btn" id="bt-clear-failed">Clear failed and cancelled</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Verification ──────────────────────────────────────── -->
+  <section id="wallets">
+    <div class="card">
+      <h2>Connect a wallet</h2>
+      <p class="hint">Verification runs against <em>your</em> wallet with <em>your</em> credentials.
+        This platform never holds funds. Only the <strong>name</strong> of the environment variable
+        holding each secret is stored &mdash; never the secret.</p>
+      <div class="row">
+        <div><label for="w-label">Label</label><input id="w-label" placeholder="KuCoin main"></div>
+        <div><label for="w-provider">Provider</label><input id="w-provider" value="kucoin" list="exchange-list"></div>
+      </div>
+      <div class="row">
+        <div><label for="w-key">Key variable</label><input id="w-key" value="FREQTRADE__EXCHANGE__KEY"></div>
+        <div><label for="w-secret">Secret variable</label><input id="w-secret" value="FREQTRADE__EXCHANGE__SECRET"></div>
+        <div><label for="w-pass">Passphrase variable</label><input id="w-pass" value="FREQTRADE__EXCHANGE__PASSWORD"></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="w-add">Connect</button></div>
+    </div>
+    <div class="card">
+      <h2>Connected wallets</h2>
+      <div id="wallet-list"><div class="empty">None connected</div></div>
+    </div>
+    <div class="card" id="verify-out" hidden>
+      <h2>Verification result</h2>
+      <div id="verify-summary"></div>
+      <div id="verify-checks"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Strategy &rarr; bot &rarr; exchange</h2>
+        <span style="flex:1"></span>
+        <select id="chain-days" style="width:auto">
+          <option value="1">Last day</option>
+          <option value="7" selected>Last 7 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
+      </div>
+      <p class="hint">The same intent, three times over. What the strategy computed, what the
+        bot instructed, and what the exchange says happened. Each arrow can break, and each
+        break means something different &mdash; a signal with no order is the bot unable to
+        act, an order the exchange disputes is the bot's record being wrong.</p>
+      <div class="kpis" id="chain-kpis" style="margin-bottom:12px"></div>
+      <div class="scroll"><table><thead><tr>
+        <th>Bar</th><th>Pair</th><th>Side</th>
+        <th>Strategy said</th><th>Bot did</th><th>Exchange says</th><th>Reading</th>
+      </tr></thead><tbody id="chain-rows">
+        <tr><td colspan="7" class="empty">&mdash;</td></tr>
+      </tbody></table></div>
+      <p class="hint" id="chain-note" style="margin:10px 0 0"></p>
+    </div>
+
+    <div class="card" id="recon-card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Past trades, checked against the exchange</h2>
+        <span style="flex:1"></span>
+        <button class="btn" id="verify-now">Verify now</button>
+      </div>
+      <p class="hint">Every order this bot recorded, compared with what the venue says
+        actually happened. This is the question a balance check does not ask: partial
+        fills booked as complete, orders lost after a crash, and anything traded on the
+        account that this bot did not place.</p>
+      <p class="hint">It runs on the bot, because that is where the exchange keys are &mdash;
+        this app has none, on purpose. &ldquo;Verify now&rdquo; leaves a request on the bot's
+        row; it picks it up within about twenty seconds and re-runs the credential,
+        permission, balance and trade-by-trade checks.</p>
+      <p class="ctl-confirm" id="verify-status" hidden></p>
+      <div id="recon-summary"><div class="empty">&mdash;</div></div>
+      <div id="recon-checks"></div>
+      <div class="scroll" id="recon-table" hidden><table><thead><tr>
+        <th>Pair</th><th>Finding</th><th>Bot order</th><th>Exchange order</th><th>Detail</th>
+      </tr></thead><tbody id="recon-rows"></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ── Live bot ──────────────────────────────────────────── -->
+  <section id="bots">
+    <div class="card" id="incident-banner" hidden></div>
+
+    <div class="card" id="live-down" hidden>
+      <h2>Bot unreachable</h2>
+      <p class="hint" id="live-down-why"></p>
+      <p class="hint">Everything below is the last state stored in the database. The bot is a
+        private service, so a deploy or restart makes it briefly unreachable; this usually
+        clears on its own within a minute.</p>
+    </div>
+
+    <div class="statusbar" id="live-status"></div>
+
+    <div class="actions" style="margin:-6px 0 16px">
+      <button class="btn tiny" data-ctl="start">Start</button>
+      <button class="btn tiny" data-ctl="stopentry">Stop opening new trades</button>
+      <button class="btn tiny danger" data-ctl="stop">Stop the bot</button>
+      <button class="btn tiny" data-ctl="reload_config">Reload config</button>
+      <span class="muted" style="font-size:12px;align-self:center">Stopping outright
+        leaves open positions unmanaged; stopping entries keeps managing them.</span>
+    </div>
+    <p class="ctl-confirm" id="ctl-confirm" hidden></p>
+
+    <div class="kpis" id="live-kpis"></div>
+
+    <!-- FreqUI splits this view in two: a narrow pane of panels beside the
+         chart. Same split here -- the pane holds what still reads at 320px,
+         the main column everything that needs the width. -->
+    <div class="livegrid">
+      <aside class="livepane">
+        <div class="card">
+          <h2>Wallet</h2>
+          <p class="hint">What the exchange says you hold.</p>
+          <div id="bal-rows"><div class="empty">&mdash;</div></div>
+        </div>
+
+        <div class="card">
+          <h2>Pairs the bot is watching</h2>
+          <p class="hint">The whitelist as the pairlist filters currently leave it.</p>
+          <div id="whitelist-box"><div class="empty">&mdash;</div></div>
+          <h3 class="sub">Locked out right now</h3>
+          <p class="hint">Barred by the strategy after a loss. Still whitelisted, still not
+            traded &mdash; usually the answer to &ldquo;why did it skip that signal&rdquo;.</p>
+          <div id="locks-box"><div class="empty">&mdash;</div></div>
+        </div>
+
+        <div class="card">
+          <h2>Why trades closed</h2>
+          <p class="hint">Mostly stop-loss means the strategy is being stopped out, not exiting.</p>
+          <div id="exit-rows" class="ranklist"><div class="empty">No closed trades yet</div></div>
+        </div>
+
+
+      </aside>
+
+      <div class="livemain">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Price and signals</h2>
+            <span class="mono muted" id="candle-title" style="font-size:12px"></span>
+            <span style="flex:1"></span>
+            <select id="candle-pair" style="width:auto;min-width:150px"></select>
+            <select id="candle-limit" style="width:auto">
+              <option value="200">200 candles</option>
+              <option value="500" selected>500 candles</option>
+              <option value="1000">1000 candles</option>
+              <option value="1500">1500 candles</option>
+            </select>
+          </div>
+          <p class="hint">The strategy's own dataframe, straight from the running bot &mdash; so the
+            signals drawn here are the ones it actually computed. A triangle is an entry signal and a
+            cross an exit signal; the filled circles are trades that really happened, and the shaded
+            band is the time a position was held. A signal with no circle under it is one the bot
+            chose not to act on, usually for want of a free slot or the stake to fill it.</p>
+          <div id="candle-box"><div class="empty">&mdash;</div></div>
+          <div class="candle-key" id="candle-key" hidden>
+            <span><i class="k-tri"></i>Entry signal</span>
+            <span><i class="k-x"></i>Exit signal</span>
+            <span><i class="k-dot pos"></i>Entry fill</span>
+            <span><i class="k-dot neg"></i>Exit fill</span>
+            <span><i class="k-band"></i>Position held</span>
+          </div>
+          <p class="hint" id="candle-meta" style="margin:10px 0 0"></p>
+        </div>
+
+        <div class="card">
+          <h2>Open positions</h2>
+          <p class="hint">Priced live from the exchange. Profit here moves with the market &mdash;
+            it is what you would get closing right now, not what the position cost.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Pair</th><th>Opened</th><th>Held</th><th class="r">Stake</th><th class="r">Entry</th>
+            <th class="r">Now</th><th class="r">Profit</th><th class="r">%</th><th>Entry tag</th><th></th>
+          </tr></thead><tbody id="pos-rows">
+            <tr><td colspan="10" class="empty">Nothing open</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Profit over time</h2>
+            <span class="spacer" style="flex:1"></span>
+            <div class="chips" id="live-period">
+              <button class="btn tiny active" data-lp="day">Days</button>
+              <button class="btn tiny" data-lp="week">Weeks</button>
+              <button class="btn tiny" data-lp="month">Months</button>
+              <button class="btn tiny" data-lp="quarter">Quarters</button>
+              <button class="btn tiny" data-lp="year">Years</button>
+            </div>
+            <select id="live-period-n" style="width:auto">
+              <option value="30" selected>Last 30</option>
+              <option value="90">Last 90</option>
+              <option value="180">Last 180</option>
+              <option value="365">All available</option>
+              <option value="0">Bot default</option>
+            </select>
+          </div>
+    <p class="hint" id="period-note">Bars are each period's realised profit; the line is
+            the running total across them. Computed from the whole history &mdash; the running
+            bot's trades and everything preserved from earlier deployments &mdash; not just
+            what the bot currently holds in memory.</p>
+          <div id="daily-chart"><div class="empty">No closed periods yet</div></div>
+          <div class="scroll" style="margin-top:12px"><table><thead><tr>
+            <th>Period</th><th class="r">Profit</th><th class="r">Return on capital</th>
+            <th class="r">Trades</th><th class="r">W / L</th>
+            <th class="r">Best</th><th class="r">Worst</th>
+          </tr></thead><tbody id="live-period-rows">
+            <tr><td colspan="7" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+    <h2>Cumulative realised profit</h2>
+          <p class="hint">Every closed trade added up, oldest to newest, across the whole
+            history. Realised only &mdash; an open position's mark moves with the market, and a
+            past point that changes every time you look at it is not history.</p>
+          <div id="wallet-chart"><div class="empty">&mdash;</div></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">Performance</h2>
+            <span class="spacer" style="flex:1"></span>
+    <div class="chips" id="perf-tabs">
+              <button class="btn tiny active" data-perf="pair">By pair</button>
+              <button class="btn tiny" data-perf="strategy">By strategy</button>
+              <button class="btn tiny" data-perf="enter_tag">By entry tag</button>
+              <button class="btn tiny" data-perf="exit_reason">By exit reason</button>
+            </div>
+          </div>
+          <p class="hint" id="perf-hint">Which pairs actually made money.</p>
+          <div class="scroll"><table><thead><tr>
+            <th id="perf-col">Pair</th><th class="r">Profit %</th>
+            <th class="r">Profit</th><th class="r">Trades</th><th></th>
+          </tr></thead><tbody id="perf-rows">
+            <tr><td colspan="7" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0">All trades</h2>
+            <span style="flex:1"></span>
+            <div class="chips" id="hist-filter">
+              <button class="btn tiny active" data-hf="all">All</button>
+              <button class="btn tiny" data-hf="open">Open</button>
+              <button class="btn tiny" data-hf="closed">Closed</button>
+            </div>
+            <input id="hist-search" placeholder="filter by pair, tag, reason or strategy"
+                   style="width:auto;min-width:210px">
+            <!-- Filled from the trades themselves and hidden while only one
+                 strategy has ever run: a filter with a single option is a
+                 control that teaches you nothing. It appears the moment a
+                 second strategy takes a trade. -->
+            <div class="chips" id="hist-strategy" hidden></div>
+          </div>
+          <p class="hint" id="trade-hist-note">Every trade this account has, from both stores at
+            once: the running bot's own tables, and what has been preserved across deployments
+            &mdash; including history from bots that no longer exist. Neither alone is your
+            full history.</p>
+          <div class="kpis" id="hist-kpis" style="margin-bottom:12px"></div>
+          <div class="scroll"><table><thead><tr>
+            <th>#</th><th>Pair</th><th class="r">Amount</th><th class="r">Stake</th>
+            <th class="r">Entry</th><th class="r">Exit</th><th class="r">Profit</th>
+            <th class="r">%</th><th>Opened</th><th>Closed</th><th class="r">Held</th>
+            <th>Entry tag</th><th>Exit reason</th><th>Strategy</th><th>Source</th>
+          </tr></thead><tbody id="trade-rows">
+            <tr><td colspan="15" class="empty">No trades</td></tr>
+          </tbody></table></div>
+          <p class="hint" id="trade-hist-count" style="margin:10px 0 0"></p>
+        </div>
+
+        <div class="card">
+          <h2>Outages</h2>
+          <p class="hint">Every time the bot stopped answering, and for how long. The worker
+            watches for this from outside &mdash; a watchdog inside the bot is gone at the one
+            moment it matters.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>What</th><th>Started</th><th>Recovered</th><th class="r">Down for</th>
+            <th>Alerted</th><th>Detail</th>
+          </tr></thead><tbody id="incident-rows">
+            <tr><td colspan="6" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Strategies that have run</h2>
+          <p class="hint">Which strategy was live, on which bot, between when and when. A
+            strategy edited without being renamed shows as two entries &mdash; the source
+            fingerprint differs even when the name does not, and the trade stamps alone
+            cannot see that.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Strategy</th><th>Mode</th><th>Ran</th>
+            <th class="r">Trades</th><th class="r">Profit</th><th class="r">Per day</th>
+            <th class="r">Win rate</th><th class="r">Avg win</th><th class="r">Avg loss</th>
+            <th class="r">Profit factor</th><th class="r">Max drawdown</th>
+            <th>Exits</th><th>Source</th>
+          </tr></thead><tbody id="deployment-rows">
+            <tr><td colspan="13" class="empty">&mdash;</td></tr>
+          </tbody></table></div>
+          <p class="hint" style="margin:12px 0 0">
+            Profit factor is gross win over gross loss: above 1 the strategy makes money,
+            below 1 it does not, and it is the one number a good run of luck cannot flatter
+            for long. Read it next to <em>avg win</em> against <em>avg loss</em> &mdash; a high
+            win rate with a much larger average loss is a losing system that has not lost yet.
+            <em>Per day</em> is there so a run of five days and one of three weeks can be
+            compared at all.</p>
+        </div>
+
+        <div class="card">
+          <h2>Registered bots</h2>
+          <p class="hint">From the database rather than the bot, so a bot that has stopped answering
+            still appears here &mdash; marked stale, which is the useful thing to know.</p>
+          <div class="scroll"><table><thead><tr>
+            <th>Name</th><th>Health</th><th>Exchange</th><th>Strategy</th><th>Mode</th>
+            <th class="r">Open</th><th>Last seen</th>
+          </tr></thead><tbody id="bot-rows">
+            <tr><td colspan="7" class="empty">No bots registered</td></tr>
+          </tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>Bot log</h2>
+          <p class="hint">The last few hundred lines, straight from the running process.</p>
+          <pre id="bot-log" class="muted">Loading&hellip;</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+
+<div id="toast"></div>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+const EXAMPLE = {
+  class_name: "MyPullback",
+  description: "Buy pullbacks inside an uptrend",
+  timeframe: "5m",
+  indicators: [
+    { id: "rsi14", kind: "rsi", params: { period: 14 } },
+    { id: "ema_fast", kind: "ema", params: { period: 21 } },
+    { id: "ema_slow", kind: "ema", params: { period: 200 } },
+    { id: "vol", kind: "volume_mean", params: { period: 20 } }
+  ],
+  entry: { long: { all: [
+    { left: "ema_fast", op: "gt", right: "ema_slow" },
+    { left: "rsi14", op: "lt", right: { const: 40 } },
+    { left: "volume", op: "gt", right: "vol" }
+  ]}},
+  exit: { long: { any: [
+    { left: "rsi14", op: "gt", right: { const: 70 } },
+    { left: "ema_fast", op: "crosses_below", right: "ema_slow" }
+  ]}},
+  risk: { stoploss: -0.05, minimal_roi: { "0": 0.05, "60": 0.02 },
+          trailing: { enabled: true, positive: 0.01, offset: 0.02 } }
+};
+
+let sb = null, session = null;
+const $ = (id) => document.getElementById(id);
+
+function toast(message, bad = false) {
+  const el = $("toast");
+  el.textContent = message;
+  el.className = bad ? "bad" : "";
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => (el.style.display = "none"), bad ? 9000 : 4000);
+}
+
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+  const response = await fetch(path, { ...options, headers });
+  const text = await response.text();
+  let body; try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) throw new Error(body?.detail ? JSON.stringify(body.detail) : `${response.status} ${text}`);
+  return body;
+}
+
+const fmtNum = (v, d = 2) => (v === null || v === undefined || v === "") ? "—" : Number(v).toFixed(d);
+const fmtPct = (v, d = 2) => (v === null || v === undefined) ? "—" : `${Number(v).toFixed(d)}%`;
+const signed = (v, text) => `<span class="${Number(v) >= 0 ? "pos" : "neg"}">${text}</span>`;
+const shortDate = (v) => v ? new Date(v).toISOString().slice(0, 16).replace("T", " ") : "—";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ── boot ────────────────────────────────────────────────────
+(async function boot() {
+  let cfg;
+  try { cfg = await (await fetch("/api/config")).json(); } catch { cfg = {}; }
+  if (!cfg.supabase_url || !cfg.supabase_anon_key) {
+    document.body.innerHTML =
+      '<div class="card" style="max-width:560px;margin:70px auto">' +
+      "<h2>Not configured</h2><p class=\"hint\">Set SUPABASE_URL and SUPABASE_ANON_KEY on the app " +
+      "service, then reload. The API is running; it just has nothing to authenticate against.</p></div>";
+    return;
+  }
+  sb = createClient(cfg.supabase_url, cfg.supabase_anon_key);
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  sb.auth.onAuthStateChange((_e, s) => { session = s; render(); });
+  render();
+  loadCatalog();
+})();
+
+function render() {
+  $("auth").hidden = !!session;
+  $("app").hidden = !session;
+  if (session) {
+    $("whoami").textContent = session.user.email;
+    refreshAll();
+  }
+}
+
+// Supabase treats signUp/signIn with an empty field as an *anonymous* attempt,
+// and then reports "Anonymous sign-ins are disabled" -- which says nothing about
+// the actual problem. Check the fields here so the message names the real one.
+function credentials() {
+  const email = $("email").value.trim();
+  const password = $("password").value;
+  if (!email) { toast("Enter your email address.", true); $("email").focus(); return null; }
+  if (!email.includes("@")) { toast("That does not look like an email address.", true); $("email").focus(); return null; }
+  if (!password) { toast("Enter a password.", true); $("password").focus(); return null; }
+  return { email, password };
+}
+
+function authError(error) {
+  const message = error?.message || "Something went wrong.";
+  if (/anonymous/i.test(message)) {
+    return "Enter both an email address and a password.";
+  }
+  if (/invalid login credentials/i.test(message)) {
+    return "That email and password combination was not recognised. If you have not made an account yet, choose Create account.";
+  }
+  if (/password should be at least/i.test(message)) {
+    return "That password is too short. Use at least 6 characters.";
+  }
+  if (/already registered|already exists/i.test(message)) {
+    return "An account already exists for that email. Choose Sign in instead.";
+  }
+  return message;
+}
+
+$("signin").onclick = async () => {
+  const creds = credentials();
+  if (!creds) return;
+  $("signin").disabled = true;
+  const { error } = await sb.auth.signInWithPassword(creds);
+  $("signin").disabled = false;
+  error ? toast(authError(error), true) : toast("Signed in");
+};
+
+$("signup").onclick = async () => {
+  const creds = credentials();
+  if (!creds) return;
+  if (creds.password.length < 6) {
+    return toast("Use a password of at least 6 characters.", true);
+  }
+  $("signup").disabled = true;
+  const { data, error } = await sb.auth.signUp(creds);
+  $("signup").disabled = false;
+  if (error) return toast(authError(error), true);
+  // With email confirmation on, signUp returns a user but no session.
+  if (data?.session) {
+    toast("Account created. You are signed in.");
+  } else {
+    toast("Account created. Check your email to confirm it, then sign in.");
+  }
+};
+
+// Enter submits, which is what everyone expects from two fields and a button.
+for (const id of ["email", "password"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("signin").click(); });
+}
+$("signout").onclick = async () => { await sb.auth.signOut(); session = null; render(); };
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll("main section").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $(b.dataset.tab).classList.add("active");
+});
+
+// ── catalog ─────────────────────────────────────────────────
+async function loadCatalog() {
+  const cat = await api("/api/catalog/indicators");
+  for (const select of [$("s-tf"), $("bt-tf")]) {
+    select.innerHTML = cat.timeframes.map(t =>
+      `<option ${t === "5m" ? "selected" : ""}>${t}</option>`).join("");
+  }
+  $("catalog-rows").innerHTML = cat.indicators.map(i => `<tr>
+    <td><code>${esc(i.key)}</code></td><td>${esc(i.category)}</td>
+    <td class="muted">${i.params.map(p => `${esc(p.name)}=${esc(p.default)}`).join(", ") || "none"}</td>
+    <td class="muted"><code>${i.outputs.map(esc).join(", ")}</code></td></tr>`).join("");
+  try {
+    const ex = await api("/api/catalog/exchanges");
+    // The handful people actually reach for, then everything else. ccxt lists
+    // over a hundred venues and an alphabetical wall buries the useful ones.
+    const common = ["binance", "kucoin", "okx", "bybit", "coinbase", "kraken"]
+      .filter(e => ex.exchanges.includes(e));
+    const rest = ex.exchanges.filter(e => !common.includes(e));
+    $("bt-exchange").innerHTML =
+      common.map(e => `<option ${e === "kucoin" ? "selected" : ""}>${esc(e)}</option>`).join("") +
+      '<option disabled>──────────</option>' +
+      rest.map(e => `<option>${esc(e)}</option>`).join("");
+  } catch { /* loadMarkets reports the failure where the user is looking */ }
+  loadMarkets();
+}
+
+// ── pair picker ─────────────────────────────────────────────
+// Typing pair symbols by hand is how you find out, after a backtest comes back
+// empty, that this venue spells it XBT/USD. The list comes from the exchange.
+let allPairs = [], chosenPairs = ["BTC/USDT", "ETH/USDT"];
+
+async function loadMarkets() {
+  const venue = $("bt-exchange").value;
+  const note = $("bt-pair-note");
+  note.textContent = "Loading pairs…";
+  try {
+    const m = await api(`/api/catalog/markets?exchange=${encodeURIComponent(venue)}`);
+    allPairs = m.pairs;
+    const quotes = m.quotes.length ? m.quotes : ["USDT"];
+    const current = $("bt-stakecur").value;
+    const keep = quotes.includes(current) ? current
+               : quotes.includes("USDT") ? "USDT" : quotes[0];
+    $("bt-stakecur").innerHTML = quotes.map(q =>
+      `<option ${q === keep ? "selected" : ""}>${esc(q)}</option>`).join("");
+
+    // A pair this venue does not list would fail later with a confusing
+    // download error. Drop it here, and say which, rather than silently.
+    const listed = new Set(allPairs.map(p => p.symbol));
+    const dropped = chosenPairs.filter(x => !listed.has(x));
+    chosenPairs = chosenPairs.filter(x => listed.has(x));
+    note.textContent = `${m.count.toLocaleString()} pairs on ${venue}` +
+      (dropped.length ? ` — removed ${dropped.join(", ")}, not listed here` : "");
+    renderPairChips();
+  } catch (e) {
+    note.textContent = `Could not load pairs: ${e.message}`;
+  }
+}
+
+function renderPairChips() {
+  $("bt-pair-chips").innerHTML = chosenPairs.length
+    ? chosenPairs.map(x => `<span class="chip-pair">${esc(x)}<button type="button"
+        data-drop="${esc(x)}" aria-label="Remove ${esc(x)}">&times;</button></span>`).join("")
+    : '<span class="muted" style="font-size:12px">No pairs selected</span>';
+  document.querySelectorAll("[data-drop]").forEach(b => b.onclick = () => {
+    chosenPairs = chosenPairs.filter(x => x !== b.dataset.drop);
+    renderPairChips();
+  });
+  candleEstimate();
+  checkHistory();
+}
+
+function showPairOptions(term) {
+  const quote = $("bt-stakecur").value;
+  const needle = term.trim().toUpperCase();
+  const matches = allPairs
+    .filter(x => x.quote === quote && !chosenPairs.includes(x.symbol))
+    .filter(x => !needle || x.symbol.includes(needle))
+    .slice(0, 60);
+  const box = $("bt-pair-list");
+  box.innerHTML = matches.length
+    ? matches.map(x => `<button type="button" data-add="${esc(x.symbol)}">
+        <span>${esc(x.base)}<span class="q">/${esc(x.quote)}</span></span>
+        ${x.min_cost ? `<span class="q">min ${fmtNum(x.min_cost, 2)}</span>` : ""}</button>`).join("")
+    : `<button type="button" disabled><span class="q">nothing matches that</span></button>`;
+  box.hidden = false;
+  box.querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+    if (!chosenPairs.includes(b.dataset.add)) chosenPairs.push(b.dataset.add);
+    $("bt-pair-search").value = "";
+    box.hidden = true;
+    renderPairChips();
+  });
+}
+
+$("bt-pair-search").addEventListener("focus", (e) => showPairOptions(e.target.value));
+$("bt-pair-search").addEventListener("input", (e) => showPairOptions(e.target.value));
+$("bt-pair-search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("bt-pair-list").hidden = true;
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".picker")) $("bt-pair-list").hidden = true;
+});
+$("bt-exchange").addEventListener("change", loadMarkets);
+$("bt-stakecur").addEventListener("change", renderPairChips);
+
+// Number fields keep free entry and gain one-click values.
+document.querySelectorAll("[data-preset-for]").forEach(group => {
+  const target = $(group.dataset.presetFor);
+  group.querySelectorAll("[data-value]").forEach(b => b.onclick = () => {
+    target.value = b.dataset.value;
+    target.dispatchEvent(new Event("change"));
+  });
+});
+
+// ── builder ─────────────────────────────────────────────────
+$("b-example").onclick = () => {
+  $("s-spec").value = JSON.stringify(EXAMPLE, null, 2);
+  $("s-name").value = "My pullback strategy";
+  $("s-class").value = EXAMPLE.class_name;
+};
+
+function currentSpec() {
+  const spec = JSON.parse($("s-spec").value);
+  if ($("s-class").value.trim()) spec.class_name = $("s-class").value.trim();
+  if ($("s-tf").value) spec.timeframe = $("s-tf").value;
+  return spec;
+}
+
+$("b-compile").onclick = async () => {
+  try {
+    const out = await api("/api/strategies/compile",
+      { method: "POST", body: JSON.stringify({ spec: currentSpec() }) });
+    $("compile-out").hidden = false;
+    const c = out.compile;
+    $("compile-status").innerHTML = c.ok
+      ? `<span class="pill ok">compiles</span> <span class="muted">warm-up
+         ${out.startup_candle_count} candles &middot; ${c.entry_signals} entry and
+         ${c.exit_signals} exit signals on the test series</span>`
+      : `<span class="pill bad">failed</span> <span class="muted">${esc(c.error)}</span>`;
+    $("compile-code").textContent = out.code;
+    toast(c.ok ? "Strategy compiles" : "Strategy did not compile", !c.ok);
+  } catch (e) { toast(e.message, true); }
+};
+
+$("b-save").onclick = async () => {
+  try {
+    await api("/api/strategies", { method: "POST", body: JSON.stringify({
+      name: $("s-name").value.trim() || "Untitled strategy", spec: currentSpec() }) });
+    toast("Strategy saved");
+    loadStrategies();
+  } catch (e) { toast(e.message, true); }
+};
+
+async function loadStrategies() {
+  const { strategies } = await api("/api/strategies");
+  $("strategy-rows").innerHTML = strategies.length ? strategies.map(s => `<tr>
+      <td>${esc(s.name)}</td><td><code>${esc(s.class_name)}</code></td>
+      <td class="num">—</td><td><span class="pill neutral">saved</span></td>
+      <td class="muted">${shortDate(s.updated_at)}</td>
+      <td><button class="btn" data-load="${esc(s.id)}">Open</button></td></tr>`).join("")
+    : '<tr><td colspan="6" class="empty">Nothing yet</td></tr>';
+
+  $("bt-strategy").innerHTML =
+    strategies.map(s => `<option value="v:${esc(s.current_version_id)}">${esc(s.name)}</option>`).join("") +
+    ["TrendPullbackStrategy", "EMACrossoverScalper", "MeanReversionScalper",
+     "ConservativeRSI", "EMACrossover", "BollingerBreakout", "ActiveTrader"]
+      .map(n => `<option value="b:${n}">${n} (built-in)</option>`).join("");
+
+  document.querySelectorAll("[data-load]").forEach(b => b.onclick = async () => {
+    const detail = await api(`/api/strategies/${b.dataset.load}`);
+    const code = await api(`/api/strategies/${b.dataset.load}/code`);
+    $("s-name").value = detail.strategy.name;
+    $("s-class").value = detail.strategy.class_name;
+    $("compile-out").hidden = false;
+    $("compile-status").innerHTML = code.compiles
+      ? '<span class="pill ok">compiles</span>' : `<span class="pill bad">${esc(code.compile_error)}</span>`;
+    $("compile-code").textContent = code.generated_code || "";
+  });
+}
+
+// ── backtesting ─────────────────────────────────────────────
+$("bt-run").onclick = async () => {
+  const choice = $("bt-strategy").value;
+  const body = {
+    exchange: $("bt-exchange").value,
+    timeframe: $("bt-tf").value,
+    pairs: chosenPairs.slice(),
+    timerange: selectedTimerange(),
+    stake_currency: $("bt-stakecur").value,
+    stake_amount: Number($("bt-stake").value) || null,
+    starting_balance: Number($("bt-balance").value),
+    max_open_trades: Number($("bt-slots").value),
+  };
+  if (choice?.startsWith("v:")) body.strategy_version_id = choice.slice(2);
+  else if (choice?.startsWith("b:")) body.builtin_strategy = choice.slice(2);
+  else return toast("Pick a strategy first", true);
+
+  try {
+    await api("/api/backtests", { method: "POST", body: JSON.stringify(body) });
+    toast("Backtest queued");
+    loadJobs();
+  } catch (e) { toast(e.message, true); }
+};
+$("bt-refresh").onclick = () => { loadJobs(); loadRuns(); };
+
+// Runs indexed by the job that produced them, so a finished queue row can open
+// its own result. Filled by loadRuns, which the same refresh always runs.
+let runsByJob = new Map();
+
+async function loadJobs() {
+  const { jobs: everything } = await api("/api/backtests/jobs");
+  // Only work that is actually outstanding. A finished job's real home is the
+  // results table; leaving it here made the queue a second, worse history.
+  // Failures stay: nothing else surfaces them, and they need a reason shown.
+  const jobs = everything.filter(j =>
+    j.status === "queued" || j.status === "running" || j.status === "failed");
+  const cls = { completed: "ok", failed: "bad", running: "info", queued: "neutral", cancelled: "neutral" };
+  $("job-rows").innerHTML = jobs.length ? jobs.map(j => {
+    const run = j.status === "completed" ? runsByJob.get(j.id) : null;
+    return `<tr ${run ? `data-jobrun="${esc(run.id)}" style="cursor:pointer" title="Open this result"` : ""}>
+      <td><span class="pill ${cls[j.status] || "neutral"}">${esc(j.status)}</span></td>
+      <td>${esc(j.builtin_strategy || "builder")}</td>
+      <td class="muted">${esc((j.pairs || []).join(", ").slice(0, 40))}</td>
+      <td class="muted">${esc(j.timerange || "all")}</td>
+      <td>${jobProgress(j)}</td>
+      <td class="muted">${shortDate(j.created_at)}</td>
+      <td class="r">${
+        j.status === "queued" || j.status === "running"
+          ? `<button class="btn tiny danger" data-cancel="${esc(j.id)}">Stop</button>`
+          : `<button class="btn tiny" data-deljob="${esc(j.id)}">Remove</button>`
+      }</td></tr>`;
+  }).join("")
+    : '<tr><td colspan="7" class="empty">Nothing queued — finished runs are in Results above</td></tr>';
+
+  // These buttons sit inside rows that are themselves clickable, so each has to
+  // keep its click to itself or removing a job would also open it.
+  document.querySelectorAll("[data-cancel]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    b.disabled = true; b.textContent = "Stopping…";
+    try {
+      const r = await api(`/api/backtests/jobs/${b.dataset.cancel}/cancel`, { method: "POST" });
+      toast(r.detail || "Cancelled");
+    } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = "Stop"; }
+    loadJobs().catch(() => {});
+  });
+  document.querySelectorAll("[data-deljob]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    b.disabled = true;
+    try { await api(`/api/backtests/jobs/${b.dataset.deljob}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, true); b.disabled = false; return; }
+    loadJobs().catch(() => {});
+  });
+
+  document.querySelectorAll("[data-jobrun]").forEach(row => row.onclick = () => {
+    const r = [...runsByJob.values()].find(x => x.id === row.dataset.jobrun);
+    if (r) openRun(r.id, runTitle(r), r);
+  });
+
+  // A running job's bar moves on its own. Only while the tab is visible: a
+  // backgrounded browser polling every five seconds forever is rude to both
+  // the worker and the battery.
+  const busy = jobs.some(j => j.status === "running" || j.status === "queued");
+  clearTimeout(loadJobs._t);
+  if (busy && document.visibilityState === "visible") {
+    loadJobs._t = setTimeout(
+      () => loadRuns().catch(() => {}).then(() => loadJobs()).catch(() => {}),
+      5000,
+    );
+  }
+}
+
+function jobProgress(j) {
+  if (j.error) return `<span class="neg">${esc(j.error.slice(0, 90))}</span>`;
+  if (j.status === "completed") return `<span class="muted">${esc(j.progress || "done")}</span>`;
+  if (j.status !== "running" && j.status !== "queued") {
+    return `<span class="muted">${esc(j.progress || "")}</span>`;
+  }
+  const started = j.started_at ? new Date(j.started_at) : null;
+  const elapsed = started ? Math.round((Date.now() - started) / 1000) : null;
+  const clock = elapsed == null ? ""
+    : elapsed < 90 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+
+  // A running job whose heartbeat has gone quiet has no worker behind it. Showing
+  // a percentage there -- and the old code invented 3% when the job predated
+  // stage reporting -- says "working on it" about a process that is gone. The
+  // sweep will requeue it; until then, say what is actually true.
+  const quiet = j.status === "running" && elapsed != null && j.progress_pct == null
+                && elapsed > 300;
+  if (quiet) {
+    return `<div style="min-width:190px">
+      <span class="pill warn">stalled</span>
+      <span class="muted" style="font-size:11.5px;margin-left:6px">no word for ${clock};
+        it will be retried automatically</span></div>`;
+  }
+
+  const pct = j.progress_pct;
+  const shown = pct == null ? "" : `${pct}%`;
+  return `<div style="min-width:190px">
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px">
+      <span>${esc(j.progress || "waiting for a worker")}</span>
+      <span class="muted num">${shown}${shown && clock ? " · " : ""}${clock}</span>
+    </div>
+    ${pct == null ? "" : `<div class="progress"><i style="width:${pct}%"></i></div>`}
+  </div>`;
+}
+
+function runTitle(r) {
+  return `${r.strategy_name} · ${(r.pairs || []).join(", ")} · ${r.timeframe} · ` +
+         `${shortDate(r.timerange_start)} to ${shortDate(r.timerange_end)}`;
+}
+
+async function loadRuns() {
+  const { runs } = await api("/api/backtests");
+  runsByJob = new Map(runs.filter(r => r.job_id).map(r => [r.job_id, r]));
+  $("run-rows").innerHTML = runs.length ? runs.map(r => `<tr data-run="${esc(r.id)}" style="cursor:pointer">
+      <td><strong>${esc(r.strategy_name)}</strong></td>
+      <td class="muted">${shortDate(r.timerange_start)} → ${shortDate(r.timerange_end)}
+        ${r.coverage_pct != null && r.coverage_pct < 95
+          ? `<br><span class="pill ${r.coverage_pct < 50 ? "bad" : "warn"}" title="${esc(r.coverage_note || "")}">${fmtNum(r.coverage_pct, 0)}% of ${esc(r.requested_timerange || "request")}</span>`
+          : ""}</td>
+      <td class="num">${r.total_trades}</td>
+      <td class="num">${fmtPct((r.win_rate || 0) * 100, 1)}</td>
+      <td class="num">${signed(r.profit_total_pct, fmtPct(r.profit_total_pct))}</td>
+      <td class="num neg">${fmtPct(r.max_drawdown_pct)}</td>
+      <td class="num">${fmtNum(r.sharpe)}</td>
+      <td class="muted">${esc(r.best_pair || "—")}</td>
+      <td class="muted">${esc(r.worst_pair || "—")}</td>
+      <td class="r"><button class="btn tiny" data-delrun="${esc(r.id)}"
+          title="Delete this result and its trades">Delete</button></td></tr>`).join("")
+    : '<tr><td colspan="10" class="empty">No results yet</td></tr>';
+
+  document.querySelectorAll("[data-delrun]").forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    const r = runs.find(x => x.id === b.dataset.delrun);
+    if (!confirm(`Delete this ${r?.strategy_name || ""} result and its ${r?.total_trades ?? 0} trades?`
+                 + "\n\nThis cannot be undone.")) return;
+    b.disabled = true;
+    try { await api(`/api/backtests/${b.dataset.delrun}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, true); b.disabled = false; return; }
+    if (currentRun === b.dataset.delrun) $("bt-detail").hidden = true;
+    loadRuns().catch(() => {});
+    loadJobs().catch(() => {});
+  });
+
+  document.querySelectorAll("[data-run]").forEach(row => row.onclick = () => {
+    const r = runs.find(x => x.id === row.dataset.run);
+    openRun(row.dataset.run, runTitle(r), r);
+  });
+}
+
+// ── wallets ─────────────────────────────────────────────────
+$("w-add").onclick = async () => {
+  try {
+    await api("/api/accounts", { method: "POST", body: JSON.stringify({
+      label: $("w-label").value.trim() || "Wallet",
+      provider: $("w-provider").value.trim().toLowerCase(),
+      api_key_env_var: $("w-key").value.trim() || null,
+      api_secret_env_var: $("w-secret").value.trim() || null,
+      api_password_env_var: $("w-pass").value.trim() || null,
+    })});
+    toast("Wallet connected");
+    loadWallets();
+  } catch (e) { toast(e.message, true); }
+};
+
+let reconAccountId = null, latestValidationAt = null;
+const currentAccountId = () => reconAccountId;
+
+async function loadReconciliation(accountId) {
+  if (!accountId) return;
+  reconAccountId = accountId;
+  try {
+    const r = await api(`/api/accounts/${accountId}/reconciliation`);
+    latestValidationAt = r.run?.created_at || null;
+    if (!r.run) {
+      $("recon-summary").innerHTML = `<div class="empty">${esc(r.note || "Nothing yet")}</div>`;
+      $("recon-checks").innerHTML = "";
+      $("recon-table").hidden = true;
+      return;
+    }
+    const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad", skipped: "neutral" };
+    // The stored row spells this as matched / discrepancy_kind / notes, not the
+    // in-memory Discrepancy's kind / detail.
+    const agreed = (r.orders || []).filter(o => o.matched).length;
+    const disagreed = (r.orders || []).filter(
+      o => !o.matched && o.discrepancy_kind && o.discrepancy_kind !== "unavailable").length;
+    $("recon-summary").innerHTML = `
+      <div class="kpis" style="margin:0 0 14px">
+        <div class="kpi"><div class="k">Verdict</div>
+          <div class="v"><span class="pill ${cls[r.run.status] || "neutral"}"
+            style="font-size:13px">${esc(r.run.status)}</span></div>
+          <div class="s">${esc(shortDate(r.run.created_at))}</div></div>
+        <div class="kpi"><div class="k">Orders agreed</div>
+          <div class="v pos">${agreed}</div><div class="s">bot and venue match</div></div>
+        <div class="kpi"><div class="k">Disagreed</div>
+          <div class="v ${disagreed ? "neg" : ""}">${disagreed}</div>
+          <div class="s">need a look</div></div>
+      </div>
+      <p class="hint">${esc(r.run.summary || "")}</p>`;
+
+    $("recon-checks").innerHTML = (r.checks || []).map(c => `
+      <div class="check ${esc(c.status)}">
+        <div class="t">${esc(c.title)} <span class="pill ${cls[c.status] || "neutral"}">${esc(c.status)}</span></div>
+        <div class="m">${esc(c.message || "")}</div>
+        ${c.remediation ? `<div class="r"><strong>What to do:</strong> ${esc(c.remediation)}</div>` : ""}
+      </div>`).join("");
+
+    // Only the disagreements are worth a row each; a matching order is the
+    // expected case and thousands of them would bury the handful that are not.
+    const notable = (r.orders || []).filter(o => !o.matched);
+    $("recon-table").hidden = !notable.length;
+    $("recon-rows").innerHTML = notable.map(o => {
+      const kind = o.discrepancy_kind || "unknown";
+      return `<tr>
+      <td><strong>${esc(o.pair || "—")}</strong></td>
+      <td><span class="pill ${kind === "unavailable" ? "neutral" : "bad"}">${esc(kind.replace(/_/g, " "))}</span>
+        ${o.discrepancy_pct != null ? `<span class="muted num"> ${fmtNum(o.discrepancy_pct, 2)}%</span>` : ""}</td>
+      <td class="muted mono">${esc(o.ft_order_id ?? "—")}</td>
+      <td class="muted mono">${esc(o.exchange_order_id ?? "—")}</td>
+      <td class="muted">${esc(o.notes || "")}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("recon-summary").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadWallets() {
+  const { accounts } = await api("/api/accounts");
+  const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad" };
+  $("wallet-list").innerHTML = accounts.length ? accounts.map(a => `
+    <div class="card" style="margin:0 0 10px;background:var(--panel-2)">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <strong>${esc(a.label)}</strong>
+        <span class="pill neutral">${esc(a.provider)}</span>
+        ${a.last_verification ? `<span class="pill ${cls[a.last_verification] || "neutral"}">${esc(a.last_verification)}</span>` : ""}
+        <span class="muted" style="font-size:12px">${a.last_verified_at ? "checked " + shortDate(a.last_verified_at) : "never checked"}</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn" data-verify="${esc(a.id)}">Verify</button>
+      </div>
+      ${a.verification_notes ? `<div class="muted" style="margin-top:7px;font-size:12px">${esc(a.verification_notes)}</div>` : ""}
+    </div>`).join("") : '<div class="empty">None connected</div>';
+
+  if (accounts.length) {
+    reconAccountId = accounts[0].id;
+    loadReconciliation(reconAccountId).catch(() => {});
+  }
+  loadChain().catch(() => {});
+
+  document.querySelectorAll("[data-verify]").forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "Checking…";
+    try {
+      const out = await api(`/api/accounts/${b.dataset.verify}/verify`, {
+        method: "POST", body: JSON.stringify({
+          kind: "preflight",
+          pairs: chosenPairs.slice(),
+          stake_amount: Number($("bt-stake").value) || 10,
+          max_open_trades: Number($("bt-slots").value) || 1,
+        })});
+      showVerification(out);
+      loadWallets();
+    } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; b.textContent = "Verify"; }
+  });
+}
+
+function showVerification(out) {
+  $("verify-out").hidden = false;
+  const cls = { passed: "ok", failed: "bad", warning: "warn", error: "bad", skipped: "neutral" };
+  $("verify-summary").innerHTML = `
+    <p><span class="pill ${cls[out.status] || "neutral"}">${esc(out.status)}</span>
+       ${esc(out.summary)}</p>
+    <dl class="kv">
+      <dt>Checks</dt><dd>${out.counts.passed} passed, ${out.counts.warning} warned, ${out.counts.failed} failed</dd>
+      <dt>Egress</dt><dd>${esc(out.egress_ip || "unknown")} ${out.egress_region ? "(" + esc(out.egress_region) + ")" : ""}</dd>
+      <dt>Took</dt><dd>${out.duration_ms} ms</dd>
+    </dl>`;
+  $("verify-checks").innerHTML = out.checks.map(c => `
+    <div class="check ${esc(c.status)}">
+      <div class="t">${esc(c.title)} <span class="pill ${cls[c.status] || "neutral"}">${esc(c.status)}</span></div>
+      <div class="m">${esc(c.message)}</div>
+      ${c.remediation ? `<div class="r"><strong>How to fix:</strong> ${esc(c.remediation)}</div>` : ""}
+    </div>`).join("");
+  $("verify-out").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// The three records, lined up. Colour is by what the row means, not by which
+// column is populated: "the bot could not act" and "the exchange disagrees" are
+// different problems and must not read the same.
+const CHAIN_LOOK = {
+  confirmed:            ["ok",      "Strategy signalled, bot acted, exchange agrees."],
+  acted_unverified:     ["neutral", "Bot acted; the exchange check has not covered it yet."],
+  signal_not_acted:     ["warn",    "Strategy signalled and no order followed — no free slot, not enough stake, the pair was locked, or the bot was down."],
+  exchange_disagrees:   ["bad",     "The exchange does not confirm the bot's record of this order."],
+  order_without_signal: ["info",    "An order with no signal behind it — a force exit, a stoploss, or something this page cannot account for."],
+};
+
+async function loadChain() {
+  const days = Number($("chain-days").value || 7);
+  try {
+    const d = await api(`/api/verification/chain?days=${days}`);
+    const c = d.counts || {};
+    $("chain-kpis").innerHTML = [
+      ["Confirmed", c.confirmed ?? 0, "all three agree"],
+      ["Not acted on", c.signal_not_acted ?? 0, "strategy signalled, no order"],
+      ["Disputed", c.exchange_disagrees ?? 0, "exchange disagrees"],
+      ["Unaccounted", c.order_without_signal ?? 0, "order with no signal"],
+    ].map(([k, v, sub]) => `<div class="kpi"><div class="k">${esc(k)}</div>
+        <div class="v ${v ? (k === "Confirmed" ? "pos" : k === "Not acted on" ? "" : "neg") : ""}">${v}</div>
+        <div class="s">${esc(sub)}</div></div>`).join("");
+
+    const rows = d.rows || [];
+    $("chain-rows").innerHTML = rows.length ? rows.map(r => {
+      const [cls, reading] = CHAIN_LOOK[r.outcome] || ["neutral", r.outcome];
+      const o = r.order, x = r.exchange;
+      return `<tr>
+        <td class="muted">${shortDate(r.bar_time)}</td>
+        <td><strong>${esc(r.pair)}</strong></td>
+        <td class="muted">${esc((r.side || "").replace("_", " "))}</td>
+        <td class="num">${r.signal_price == null ? '<span class="muted">—</span>'
+                                                 : fmtNum(r.signal_price, 6)}</td>
+        <td class="num">${o ? fmtNum(o.average ?? o.price, 6) : '<span class="muted">no order</span>'}</td>
+        <td>${x ? `<span class="pill ${x.matched ? "ok" : "bad"}">${x.matched ? "agrees" : esc(x.discrepancy_kind || "disputed")}</span>`
+                : '<span class="muted">not checked</span>'}</td>
+        <td><span class="pill ${cls}">${esc(r.outcome.replaceAll("_", " "))}</span></td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="7" class="empty">${esc(d.note || "Nothing in this window")}</td></tr>`;
+
+    $("chain-note").textContent = d.note
+      || `${rows.length} events over ${d.days} days, from ${d.signals_recorded} recorded signals. `
+         + "Hover a row's reading for what it means.";
+    document.querySelectorAll("#chain-rows .pill").forEach(pill => {
+      const row = rows[[...pill.closest("tbody").rows].indexOf(pill.closest("tr"))];
+      if (row) pill.title = (CHAIN_LOOK[row.outcome] || [, ""])[1];
+    });
+  } catch (e) {
+    $("chain-rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+$("chain-days").onchange = () => loadChain().catch(() => {});
+
+// Verification runs on the bot, so the button leaves a request and then watches
+// for a result newer than the one already on screen.
+$("verify-now").onclick = async () => {
+  const account = currentAccountId();
+  if (!account) { toast("Connect a wallet first.", true); return; }
+  const b = $("verify-now");
+  const before = latestValidationAt;
+  b.disabled = true; b.textContent = "Requesting…";
+  $("verify-status").hidden = false;
+  $("verify-status").textContent = "Asked the bot to run a full check. Waiting for it…";
+  try {
+    const r = await api(`/api/accounts/${account}/verify/request`, { method: "POST" });
+    for (let i = 0; i < 20; i++) {
+      await new Promise(done => setTimeout(done, 3000));
+      b.textContent = `Waiting… ${(i + 1) * 3}s`;
+      await loadReconciliation(account).catch(() => {});
+      await loadChain().catch(() => {});
+      if (latestValidationAt && latestValidationAt !== before) {
+        $("verify-status").textContent =
+          `Checked ${shortDate(latestValidationAt)} by ${esc(r.bot || "the bot")}.`;
+        break;
+      }
+    }
+    if (latestValidationAt === before) {
+      $("verify-status").textContent =
+        "The bot has not answered yet. It checks for requests every 20 seconds — if it is "
+        + "mid-deploy this can take a minute. The result will appear here when it lands.";
+    }
+  } catch (e) {
+    $("verify-status").textContent = e.message;
+  }
+  b.disabled = false; b.textContent = "Verify now";
+};
+
+// ── bots ────────────────────────────────────────────────────
+async function loadBots() {
+  const { bots } = await api("/api/bots");
+  const cls = { healthy: "ok", stale: "warn", offline: "bad", never_seen: "neutral" };
+  $("bot-rows").innerHTML = bots.length ? bots.map(b => `<tr>
+      <td>${esc(b.name)}</td>
+      <td><span class="pill ${cls[b.health] || "neutral"}">${esc(b.health)}</span></td>
+      <td>${esc(b.exchange)}</td><td>${esc(b.strategy || "—")}</td>
+      <td>${esc(b.trading_mode)}</td><td class="num">${b.open_trades ?? 0}</td>
+      <td class="muted">${shortDate(b.last_heartbeat_at)}</td></tr>`).join("")
+    : '<tr><td colspan="7" class="empty">No bots registered</td></tr>';
+
+  try {
+    await loadStoredTrades();
+  } catch (e) {
+    $("trade-rows").innerHTML =
+      `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Read from Postgres, not from the bot: this is the copy that outlives a
+// redeploy, and the only history left when the bot is unreachable.
+let histTrades = [], histFilter = "all", histQuery = "", histStrategy = "all";
+
+const heldBetween = (a, b) => {
+  if (!a) return "—";
+  const ms = (b ? new Date(b) : new Date()).getTime() - new Date(a).getTime();
+  if (!isFinite(ms) || ms < 0) return "—";
+  const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000) % 24;
+  const m = Math.floor(ms / 60000) % 60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+
+const INCIDENT_LOOK = {
+  offline:     ["bad",  "No heartbeat — the process was gone."],
+  stale:       ["warn", "Heartbeats stopped briefly. Usually a redeploy."],
+  not_trading: ["bad",  "Up and answering, but not trading — no stop-loss was being managed."],
+};
+
+const forDuration = (s) => s == null ? "—"
+  : s < 90 ? `${s}s`
+  : s < 5400 ? `${Math.round(s / 60)}m`
+  : `${(s / 3600).toFixed(1)}h`;
+
+async function loadIncidents() {
+  try {
+    const d = await api("/api/bots/incidents");
+    const rows = d.incidents || [], open = d.open || [];
+
+    // Unresolved outages go at the top of the Live tab, not buried in a table.
+    const banner = $("incident-banner");
+    if (open.length) {
+      banner.hidden = false;
+      banner.innerHTML = `<h2 class="neg">Bot is not trading</h2>` + open.map(i => {
+        const [, meaning] = INCIDENT_LOOK[i.kind] || ["", i.kind];
+        return `<p class="hint" style="margin:0 0 6px">
+          <strong>${esc(i.kind.replaceAll("_", " "))}</strong> since ${shortDate(i.opened_at)}
+          &mdash; ${esc(meaning)} ${esc(i.detail || "")}</p>`;
+      }).join("");
+    } else {
+      banner.hidden = true;
+    }
+
+    $("incident-rows").innerHTML = rows.length ? rows.map(i => {
+      const [cls, meaning] = INCIDENT_LOOK[i.kind] || ["neutral", i.kind];
+      return `<tr>
+        <td><span class="pill ${cls}" title="${esc(meaning)}">${esc(i.kind.replaceAll("_", " "))}</span></td>
+        <td class="muted">${shortDate(i.opened_at)}</td>
+        <td class="muted">${i.resolved_at ? shortDate(i.resolved_at)
+                                          : '<span class="pill bad">ongoing</span>'}</td>
+        <td class="r num">${forDuration(i.downtime_seconds)}</td>
+        <td>${i.notified ? '<span class="pill ok">sent</span>'
+            : i.notify_error ? `<span class="pill warn" title="${esc(i.notify_error)}">not sent</span>`
+            : '<span class="muted">—</span>'}</td>
+        <td class="muted">${esc(i.detail || "—")}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="6" class="empty">No outages recorded</td></tr>';
+  } catch (e) {
+    $("incident-rows").innerHTML =
+      `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function loadDeployments() {
+  try {
+    const { deployments } = await api("/api/bots/history/strategies");
+    const rows = deployments || [];
+    $("deployment-rows").innerHTML = rows.length ? rows.map(d => {
+      const p = Number(d.profit_abs) || 0;
+      const perDay = d.profit_per_day == null ? null : Number(d.profit_per_day);
+      const pf = d.profit_factor == null ? null : Number(d.profit_factor);
+      const dd = Number(d.max_drawdown) || 0;
+      // The trade stamps and the deployment window should name the same
+      // strategy. Where they do not, say so rather than quietly picking one.
+      const odd = (d.stamped || []).filter(x => x && x !== d.strategy);
+      // Above 1 the run made money, below 1 it did not. Nothing else on the
+      // row survives a lucky streak as poorly, so it gets the only colour.
+      const pfPill = pf == null ? '<span class="muted">—</span>'
+        : `<span class="pill ${pf >= 1.5 ? "ok" : pf >= 1 ? "warn" : "bad"}">${fmtNum(pf, 2)}</span>`;
+      const ran = d.ended_at
+        ? `${shortDate(d.started_at)} &rarr; ${shortDate(d.ended_at)}`
+        : `${shortDate(d.started_at)} &rarr; <span class="pill ok">running</span>`;
+      const exits = Object.entries(d.exits || {})
+        .map(([reason, n]) => `${esc(reason)}&nbsp;${n}`).join(", ");
+      return `<tr>
+        <td><strong>${esc(d.strategy)}</strong>${odd.length
+            ? ` <span class="pill warn" title="Trades in this window are stamped ${esc(odd.join(", "))}">mixed stamps</span>` : ""}</td>
+        <td><span class="pill ${d.trading_mode === "live" ? "info" : "neutral"}">${esc(d.trading_mode || "—")}</span></td>
+        <td class="muted" style="white-space:nowrap">${ran}
+          ${d.days ? `<br><span class="muted" style="font-size:11px">${fmtNum(d.days, 1)} days</span>` : ""}</td>
+        <td class="r num">${d.trades ?? 0}</td>
+        <td class="r num">${d.trades ? signed(p, (p >= 0 ? "+" : "") + fmtNum(p)) : "—"}</td>
+        <td class="r num">${perDay == null ? "—" : signed(perDay, (perDay >= 0 ? "+" : "") + fmtNum(perDay))}</td>
+        <td class="r num">${d.win_rate == null ? "—" : fmtNum(d.win_rate, 1) + "%"}</td>
+        <td class="r num">${d.avg_win == null ? "—" : "+" + fmtNum(d.avg_win)}</td>
+        <td class="r num">${d.avg_loss == null ? "—" : fmtNum(d.avg_loss)}</td>
+        <td class="r">${pfPill}</td>
+        <td class="r num">${d.trades ? fmtNum(dd) : "—"}</td>
+        <td class="muted" style="font-size:11px">${exits || "—"}</td>
+        <td class="muted mono" style="font-size:11px">${esc((d.source_sha || "—").slice(0, 12))}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="13" class="empty">No deployments recorded yet</td></tr>';
+  } catch (e) {
+    $("deployment-rows").innerHTML =
+      `<tr><td colspan="13" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function loadStoredTrades() {
+  const { trades, counts, totals, profit_factor, expectancy, best } =
+    await api("/api/bots/history");
+  histTrades = trades || [];
+  renderStrategyChips();
+
+  const c = counts || {}, tot = totals || {};
+  liveHistory = { counts: c, totals: tot, profit_factor: profit_factor,
+                  expectancy: expectancy, best: best };
+  if (liveOverview) {
+    $("live-kpis").innerHTML = liveKpis(liveOverview.profit, liveOverview.balance,
+                                        liveOverview.config, liveHistory);
+  }
+  $("hist-kpis").innerHTML = [
+    ["Trades", c.total ?? 0, `${c.open ?? 0} open · ${c.closed ?? 0} closed`],
+    ["Realised", (tot.profit_abs >= 0 ? "+" : "") + fmtNum(tot.profit_abs),
+     "USDT, closed trades only"],
+    ["Win rate", tot.win_rate == null ? "—" : fmtNum(tot.win_rate) + "%",
+     `${tot.wins ?? 0} won · ${tot.losses ?? 0} lost`],
+    ["Where from", `${c.live ?? 0} / ${c.archive ?? 0}`, "running bot / preserved"],
+  ].map(([k, v, s]) => `<div class="kpi"><div class="k">${esc(k)}</div>
+      <div class="v ${String(v).startsWith("-") ? "neg" : String(v).startsWith("+") ? "pos" : ""}">${esc(v)}</div>
+      <div class="s">${esc(s)}</div></div>`).join("");
+
+  $("trade-hist-note").textContent =
+    `${c.total ?? 0} trades in total, from ${shortDate(tot.first_open)} to `
+    + `${shortDate(tot.last_open)}. Both stores in one list: the running bot's own tables `
+    + "and the copy preserved across deployments. Neither alone is your full history.";
+  renderHistory();
+}
+
+function renderHistory() {
+  const q = histQuery.trim().toLowerCase();
+  const rows = histTrades.filter(t => {
+    if (histFilter === "open" && !t.is_open) return false;
+    if (histFilter === "closed" && t.is_open) return false;
+    if (histStrategy !== "all" && String(t.strategy ?? "") !== histStrategy) return false;
+    if (!q) return true;
+    return [t.pair, t.enter_tag, t.exit_reason, t.strategy, t.exchange]
+      .some(v => String(v ?? "").toLowerCase().includes(q));
+  });
+
+  $("trade-rows").innerHTML = rows.length ? rows.map(t => {
+    const abs = t.close_profit_abs, pct = t.close_profit_pct;
+    return `<tr>
+      <td class="muted num">${esc(t.ft_trade_id ?? "—")}</td>
+      <td><strong>${esc(t.pair)}</strong>${t.is_short ? ' <span class="pill bad">short</span>' : ""}</td>
+      <td class="r num">${fmtNum(t.amount, 6)}</td>
+      <td class="r num">${fmtNum(t.stake_amount)}</td>
+      <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+      <td class="r num">${t.close_rate == null ? "—" : fmtNum(t.close_rate, 6)}</td>
+      <td class="r num">${abs == null ? '<span class="muted">open</span>'
+                                      : signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
+      <td class="r num">${pct == null ? "—"
+                                      : signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
+      <td class="muted">${shortDate(t.open_date)}</td>
+      <td class="muted">${t.close_date ? shortDate(t.close_date) : "—"}</td>
+      <td class="r muted">${heldBetween(t.open_date, t.close_date)}</td>
+      <td class="muted">${esc(t.enter_tag || "—")}</td>
+      <td class="muted">${esc(t.exit_reason || "—")}</td>
+      <td class="muted">${esc(t.strategy || "—")}</td>
+      <td><span class="pill ${t.source === "live" ? "info" : "neutral"}">${esc(t.source)}</span></td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="15" class="empty">Nothing matches</td></tr>';
+
+  $("trade-hist-count").textContent = rows.length === histTrades.length
+    ? `Showing all ${rows.length} trades.`
+    : `Showing ${rows.length} of ${histTrades.length} trades.`;
+}
+
+function renderStrategyChips() {
+  // Every strategy that has actually traded, most recent first. freqtrade
+  // stamps the class name on each trade, so an edit that keeps the name reads
+  // as one strategy here -- the deployment table below is where a same-name
+  // edit separates out, by source fingerprint.
+  const names = [...new Set(histTrades.map(t => t.strategy).filter(Boolean))];
+  const box = $("hist-strategy");
+  if (names.length < 2) {
+    box.hidden = true;
+    histStrategy = "all";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = ["all", ...names].map(name =>
+    `<button class="btn tiny${histStrategy === name ? " active" : ""}" data-hs="${esc(name)}">${
+      name === "all" ? "All strategies" : esc(name)}</button>`).join("");
+  box.querySelectorAll("[data-hs]").forEach(b => b.onclick = () => {
+    histStrategy = b.dataset.hs;
+    renderStrategyChips();
+    renderHistory();
+  });
+}
+
+document.querySelectorAll("#hist-filter [data-hf]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#hist-filter [data-hf]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  histFilter = b.dataset.hf;
+  renderHistory();
+});
+$("hist-search").oninput = (e) => { histQuery = e.target.value; renderHistory(); };
+
+// ── live bot ────────────────────────────────────────────────
+// Everything here comes from the bot over Render's private network, because the
+// numbers only exist live: an open position's profit depends on the price right
+// now, and the database only records what the position cost.
+
+const held = (since) => {
+  if (!since) return "—";
+  let s = Math.max(0, (Date.now() - new Date(since).getTime()) / 1000);
+  const d = Math.floor(s / 86400); s -= d * 86400;
+  const h = Math.floor(s / 3600);  s -= h * 3600;
+  const m = Math.floor(s / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+};
+
+// A bar chart with a cumulative line over it. Hand-built rather than pulled from
+// a library: one chart does not justify a charting dependency on a page that is
+// otherwise dependency-free, and the CSP here allows no external scripts anyway.
+function dailyChart(rows, stake) {
+  if (!rows || !rows.length) return '<div class="empty">No closed days yet</div>';
+  const days = rows.slice().reverse();                       // oldest first
+  const W = 780, H = 190, PADL = 52, PADB = 28, PADT = 10;
+  const vals = days.map(d => Number(d.profit_abs ?? d.abs_profit) || 0);
+  let running = 0;
+  const cum = vals.map(v => (running += v));
+  const lo = Math.min(0, ...vals, ...cum), hi = Math.max(0, ...vals, ...cum);
+  const span = (hi - lo) || 1;
+  const y = (v) => PADT + (hi - v) / span * (H - PADT - PADB);
+  const bw = Math.max(2, (W - PADL - 8) / days.length - 3);
+  const x = (i) => PADL + i * ((W - PADL - 8) / days.length) + 1.5;
+
+  const bars = days.map((d, i) => {
+    const v = vals[i], top = y(Math.max(0, v)), h = Math.abs(y(v) - y(0));
+    const cls = v >= 0 ? "pos" : "neg";
+    return `<rect x="${x(i).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}"
+      height="${Math.max(1, h).toFixed(1)}" rx="1.5" fill="var(--${cls})" opacity=".55">
+      <title>${esc(d.label ?? d.date)}  ${v >= 0 ? "+" : ""}${fmtNum(v)} ${esc(stake || "")} · ${d.trades ?? d.trade_count ?? 0} trades</title>
+    </rect>`;
+  }).join("");
+
+  const line = cum.map((v, i) => `${(x(i) + bw / 2).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const ticks = [hi, (hi + lo) / 2, lo].map(v =>
+    `<line class="gl" x1="${PADL}" y1="${y(v).toFixed(1)}" x2="${W - 8}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${PADL - 7}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${fmtNum(v, 1)}</text>`
+  ).join("");
+
+  const first = days[0]?.label ?? days[0]?.date ?? "";
+  const last = days[days.length - 1]?.label ?? days[days.length - 1]?.date ?? "";
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 16}" role="img"
+      aria-label="Daily profit, ${days.length} days, running total ${fmtNum(cum[cum.length - 1])}">
+    ${ticks}
+    <line class="zero" x1="${PADL}" y1="${y(0).toFixed(1)}" x2="${W - 8}" y2="${y(0).toFixed(1)}"/>
+    ${bars}
+    <polyline class="ln" points="${line}"/>
+    <text class="lbl" x="${PADL}" y="${H + 8}">${esc(first)}</text>
+    <text class="lbl" x="${W - 8}" y="${H + 8}" text-anchor="end">${esc(last)}</text>
+  </svg>`;
+}
+
+function rankList(items, { label, value, weight, signed: isSigned = true }) {
+  if (!items || !items.length) return '<div class="empty">Nothing yet</div>';
+  const max = Math.max(...items.map(i => Math.abs(weight(i)))) || 1;
+  return items.map(i => {
+    const w = weight(i), pct = Math.abs(w) / max * 100;
+    const cls = !isSigned ? "" : w >= 0 ? "pos" : "neg";
+    const colour = !isSigned ? "var(--accent)" : `var(--${w >= 0 ? "pos" : "neg"})`;
+    return `<div class="rank">
+      <div class="nm">${esc(label(i))}</div>
+      <div class="vl ${cls}">${esc(value(i))}</div>
+      <div class="track"><i style="width:${pct.toFixed(1)}%;background:${colour}"></i></div>
+    </div>`;
+  }).join("");
+}
+
+function liveStatus(cfg, count, reachable) {
+  if (!cfg) {
+    return `<span class="sb"><i class="dot down"></i>&nbsp;<b>Unreachable</b></span>`;
+  }
+  const running = (cfg.state || "").toLowerCase() === "running";
+  const dot = !reachable ? "down" : running ? "up" : "idle";
+  const bits = [
+    `<span class="sb"><i class="dot ${dot}"></i>&nbsp;<b>${esc(cfg.state || "unknown")}</b></span>`,
+    `<span class="sb"><span>mode</span><b class="${cfg.dry_run ? "" : "neg"}">${cfg.dry_run ? "dry run" : "LIVE MONEY"}</b></span>`,
+    `<span class="sb"><span>exchange</span><b>${esc(cfg.exchange || "—")}</b></span>`,
+    `<span class="sb"><span>strategy</span><b>${esc(cfg.strategy || "—")}</b></span>`,
+    `<span class="sb"><span>timeframe</span><b>${esc(cfg.timeframe || "—")}</b></span>`,
+    `<span class="sb"><span>stake</span><b>${fmtNum(cfg.stake_amount)} ${esc(cfg.stake_currency || "")}</b></span>`,
+  ];
+  if (count) bits.push(`<span class="sb"><span>open</span><b>${count.current} / ${count.max}</b></span>`);
+  if (cfg.version) bits.push(`<span class="sb"><span>freqtrade</span><b>${esc(cfg.version)}</b></span>`);
+  return bits.join("");
+}
+
+// Two sources on purpose. The bot is the only thing that knows what a position
+// is worth *right now*; the database is the only thing that still knows what the
+// account did before the last redeploy. Taking realised figures from the bot is
+// what made these read near-zero after the live cutover.
+function liveKpis(profit, balance, cfg, history) {
+  const stake = cfg?.stake_currency || "";
+  const card = (k, v, s, cls = "") =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v ${cls}">${v}</div>
+     <div class="s">${s || "&nbsp;"}</div></div>`;
+
+  const h = history || {};
+  const counts = h.counts || {}, totals = h.totals || {};
+  const realised = Number(totals.profit_abs) || 0;
+
+  // Unrealised comes from the bot: it is a live mark, not a stored fact.
+  const open = Array.isArray(profit?.open) ? profit.open : null;
+  const unreal = Number(profit?.profit_all_coin ?? 0) - Number(profit?.profit_closed_coin ?? 0);
+  const total = realised + (isFinite(unreal) ? unreal : 0);
+
+  const best = (h.best || {});
+  return [
+    card("Total P&amp;L", `${total >= 0 ? "+" : ""}${fmtNum(total)}`,
+         `${esc(stake)} · realised + open`, total >= 0 ? "pos" : "neg"),
+    card("Realised", `${realised >= 0 ? "+" : ""}${fmtNum(realised)}`,
+         `${counts.closed ?? 0} closed, whole history`, realised >= 0 ? "pos" : "neg"),
+    card("Unrealised", `${unreal >= 0 ? "+" : ""}${fmtNum(unreal)}`,
+         `${counts.open ?? 0} open now`, unreal >= 0 ? "pos" : "neg"),
+    card("Win rate", totals.win_rate == null ? "—" : `${fmtNum(totals.win_rate, 1)}%`,
+         `${totals.wins ?? 0} won · ${totals.losses ?? 0} lost`),
+    card("Profit factor", h.profit_factor == null ? "—" : fmtNum(h.profit_factor),
+         "gross win ÷ gross loss"),
+    card("Expectancy", h.expectancy == null ? "—" : fmtNum(h.expectancy),
+         `per closed trade, in ${esc(stake)}`,
+         (h.expectancy || 0) >= 0 ? "pos" : "neg"),
+    card("Wallet", balance ? fmtNum(balance.total) : "—",
+         `${esc(stake)} on the exchange now`),
+    card("Best pair", esc(best.name || "—"),
+         best.profit_abs != null ? `${(best.profit_abs >= 0 ? "+" : "") + fmtNum(best.profit_abs)} ${esc(stake)}` : "&nbsp;"),
+  ].join("");
+}
+
+async function loadLive() {
+  let o;
+  try {
+    o = await api("/api/live/overview");
+    $("live-down").hidden = true;
+  } catch (e) {
+    $("live-down").hidden = false;
+    $("live-down-why").textContent = String(e.message || e);
+    $("live-status").innerHTML = liveStatus(null, null, false);
+    o = { errors: {} };
+  }
+
+  const cfg = o.config, stake = cfg?.stake_currency || "";
+  const reachable = !!cfg;
+  $("live-status").innerHTML = liveStatus(cfg, o.count, reachable);
+  // Drawn once the history arrives; the bot's own figures cover only what it
+  // has traded since it last started.
+  liveHistory = liveHistory || {};
+  $("live-kpis").innerHTML = liveKpis(o.profit, o.balance, cfg, liveHistory);
+  liveOverview = o;
+
+  // open positions
+  const open = Array.isArray(o.status) ? o.status : (o.status?.data || []);
+  liveOpenTrades = open;
+  $("pos-rows").innerHTML = open.length ? open.map(t => {
+    const abs = Number(t.profit_abs ?? 0), pct = Number(t.profit_pct ?? (t.profit_ratio * 100) ?? 0);
+    return `<tr>
+      <td><strong>${esc(t.pair)}</strong>${t.is_short ? ' <span class="pill bad">short</span>' : ""}</td>
+      <td class="muted">${shortDate(t.open_date)}</td>
+      <td class="muted">${held(t.open_date)}</td>
+      <td class="r num">${fmtNum(t.stake_amount)}</td>
+      <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+      <td class="r num">${fmtNum(t.current_rate, 6)}</td>
+      <td class="r num">${signed(abs, (abs >= 0 ? "+" : "") + fmtNum(abs))}</td>
+      <td class="r num">${signed(pct, (pct >= 0 ? "+" : "") + fmtNum(pct) + "%")}</td>
+      <td class="muted">${esc(t.enter_tag || "—")}</td>
+      <td class="r"><button class="btn tiny danger" data-exit="${esc(t.trade_id)}"
+          data-pair="${esc(t.pair)}">Close</button></td>
+    </tr>`;
+  }).join("") : '<tr><td colspan="10" class="empty">Nothing open</td></tr>';
+
+  document.querySelectorAll("[data-exit]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Close ${b.dataset.pair} now at market price?\n\nThis places a real exit order.`)) return;
+    b.disabled = true; b.textContent = "Closing…";
+    try {
+      const r = await api("/api/live/forceexit", {
+        method: "POST", body: JSON.stringify({ trade_id: b.dataset.exit, order_type: "market" }),
+      });
+      toast(r?.result?.result || `Exit submitted for ${b.dataset.pair}`);
+      setTimeout(loadLive, 2500);
+    } catch (e) { toast(e.message, true); b.disabled = false; b.textContent = "Close"; }
+  });
+
+  loadLivePeriod(stake);
+  loadWalletHistory(stake);
+  loadPerformance(stake);
+
+  // wallet
+  const cur = (o.balance?.currencies || []).filter(c => (c.balance ?? 0) > 0);
+  // A list, not a table: this sits in a 300px column where a four-column table
+  // clips its own headings.
+  $("bal-rows").innerHTML = cur.length ? cur.map(c => `<div class="holding">
+      <b>${esc(c.currency)}</b>
+      <span class="tot num">${fmtNum(c.balance, 6)}</span>
+      <span class="split">${fmtNum(c.free, 6)} free${
+        Number(c.used) ? ` · ${fmtNum(c.used, 6)} in trades` : ""}</span>
+    </div>`).join("")
+    : '<div class="empty">Nothing held</div>';
+
+
+  // exit reasons + closed trades + log are their own reads, so a slow one does
+  // not hold up everything above.
+  loadLiveExtras(stake);
+}
+
+let livePeriod = "day", perfView = "pair", liveWhitelist = [], slowRefreshAt = 0;
+let liveHistory = null, liveOverview = null;
+
+document.querySelectorAll("#live-period [data-lp]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#live-period [data-lp]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  livePeriod = b.dataset.lp;
+  loadLivePeriod().catch(() => {});
+});
+
+$("live-period-n").onchange = () => loadLivePeriod().catch(() => {});
+
+document.querySelectorAll("#perf-tabs [data-perf]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#perf-tabs [data-perf]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  perfView = b.dataset.perf;
+  loadPerformance().catch(() => {});
+});
+
+// freqtrade returns the same shape for days, weeks and months, so one renderer
+// covers all three and the toggle costs a fetch rather than a code path.
+async function loadLivePeriod(stake = "") {
+  try {
+    // Read the whole history, not freqtrade's view of it. The bot only knows
+    // the trades in its own tables, so after the live cutover reset those it
+    // drew a row of zeroes over an account that had been trading for weeks.
+    const n = Number($("live-period-n")?.value || 0);
+    const q = `?period=${livePeriod}` + (n ? `&limit=${n}` : "");
+    const d = await api(`/api/bots/history/breakdown${q}`);
+    const rows = d.rows || [];
+    if (!rows.length) {
+      $("daily-chart").innerHTML = '<div class="empty">No closed periods yet</div>';
+      $("live-period-rows").innerHTML = '<tr><td colspan="7" class="empty">&mdash;</td></tr>';
+      return;
+    }
+    // breakdown() returns oldest-first; dailyChart reverses internally, so hand
+    // it newest-first to match what it expects.
+    const newest = rows.slice().reverse();
+    $("daily-chart").innerHTML = dailyChart(newest, stake || "");
+    $("live-period-rows").innerHTML = newest.map(r => {
+      const v = Number(r.profit_abs) || 0;
+      const rel = r.return_on_capital_pct;
+      return `<tr>
+        <td><strong>${esc(r.label)}</strong></td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${rel == null ? "—" : signed(rel, fmtNum(rel) + "%")}</td>
+        <td class="r num muted">${r.trades ?? 0}</td>
+        <td class="r num muted">${r.wins ?? 0}W / ${r.losses ?? 0}L</td>
+        <td class="r num muted">${r.best_trade == null ? "—"
+            : (r.best_trade >= 0 ? "+" : "") + fmtNum(r.best_trade)}</td>
+        <td class="r num muted">${r.worst_trade == null ? "—"
+            : fmtNum(r.worst_trade)}</td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("daily-chart").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadWalletHistory(stake = "") {
+  try {
+    const d = await api("/api/bots/history/equity");
+    const points = (d.points || [])
+      .map(p => ({ x: p.at, y: Number(p.realised) }))
+      .filter(p => p.x && isFinite(p.y));
+    if (points.length < 2) {
+      $("wallet-chart").innerHTML =
+        '<div class="empty">Not enough closed trades to plot yet</div>';
+      return;
+    }
+    $("wallet-chart").innerHTML = lineChart(points, {
+      id: "wallet-line", fill: true, format: v => fmtNum(v, 0),
+    });
+    attachCrosshair("wallet-line", points, p =>
+      `<b>${(p.y >= 0 ? "+" : "") + fmtNum(p.y, 2)}</b> ${esc(stake)} realised<br>
+       <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+    return;
+  } catch (e) {
+    $("wallet-chart").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+}
+
+
+const PERF_LABEL = {
+  pair:        ["Pair", "Which pairs actually made money, across the whole history."],
+  enter_tag:   ["Entry tag", "Which entry conditions paid off, across the whole history."],
+  exit_reason: ["Exit reason", "How positions ended, across the whole history."],
+  strategy:    ["Strategy", "Which strategy earned what. Trades are stamped by the bot that made them, so this holds across redeploys and strategy changes."],
+};
+
+async function loadPerformance(stake = "") {
+  const [label, hint] = PERF_LABEL[perfView] || PERF_LABEL.pair;
+  $("perf-col").textContent = label;
+  $("perf-hint").textContent = hint;
+  try {
+    // The whole history, not the running bot's slice of it.
+    const d = await api(`/api/bots/history/performance?by=${perfView}`);
+    const rows = d.rows || [];
+    if (!rows.length) {
+      $("perf-rows").innerHTML =
+        '<tr><td colspan="5" class="empty">No closed trades yet</td></tr>';
+      return;
+    }
+    const worst = Math.max(...rows.map(r => Math.abs(Number(r.profit_abs) || 0)), 1);
+    $("perf-rows").innerHTML = rows.map(r => {
+      const v = Number(r.profit_abs) || 0;
+      const pct = r.profit_pct != null ? Number(r.profit_pct)
+                : r.profit_ratio != null ? Number(r.profit_ratio) * 100 : null;
+      return `<tr>
+        <td><strong>${esc(r.name)}</strong></td>
+        <td class="r num">${pct == null ? "—" : signed(pct, fmtNum(pct) + "%")}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num muted">${r.count ?? 0}<span class="muted"> · ${r.wins ?? 0}W/${r.losses ?? 0}L</span></td>
+        <td style="width:30%"><div class="bar"><i style="width:${(Math.abs(v) / worst * 100).toFixed(1)}%;
+          background:var(--${v >= 0 ? "pos" : "neg"})"></i></div></td></tr>`;
+    }).join("");
+  } catch (e) {
+    $("perf-rows").innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// Controls are the reason this page matters once real money is moving, so each
+// one says what it will do before it does it.
+const CTL_CONFIRM = {
+  stop: "Stop the bot entirely?\n\nOpen positions stay open and stop being managed — "
+      + "no stop-loss, no take-profit, until it is started again.\n\n"
+      + "This is remembered: a restart or redeploy will not quietly start it trading again.",
+  stopentry: "Stop opening new trades?\n\nExisting positions keep being managed normally.\n\n"
+      + "This is remembered across restarts.",
+  start: "Start the bot?",
+  reload_config: "Reload the configuration from disk?",
+};
+
+// Two clicks, in the page. Deliberately not window.confirm: a browser that has
+// been asked to block dialogs returns false from it without showing anything,
+// and the control then does nothing at all with no request, no error and no
+// way to tell. That is how the Start button looked broken on the live cutover.
+let ctlArmed = null, ctlTimer = null;
+
+function disarmControls() {
+  clearTimeout(ctlTimer);
+  ctlArmed = null;
+  document.querySelectorAll("[data-ctl]").forEach(b => {
+    if (b.dataset.label) { b.textContent = b.dataset.label; delete b.dataset.label; }
+    b.classList.remove("armed");
+  });
+  $("ctl-confirm").hidden = true;
+}
+
+document.querySelectorAll("[data-ctl]").forEach(b => b.onclick = async () => {
+  const action = b.dataset.ctl;
+
+  if (ctlArmed !== action) {
+    disarmControls();
+    ctlArmed = action;
+    b.dataset.label = b.textContent;
+    b.textContent = "Confirm?";
+    b.classList.add("armed");
+    $("ctl-confirm").textContent = CTL_CONFIRM[action] || `Send ${action}?`;
+    $("ctl-confirm").hidden = false;
+    // Not armed forever: a stale "Confirm?" invites a click that means nothing.
+    ctlTimer = setTimeout(disarmControls, 12000);
+    return;
+  }
+
+  const label = b.dataset.label || b.textContent;
+  disarmControls();
+  b.disabled = true; b.textContent = "Sending…";
+  try {
+    const r = await api("/api/live/control", {
+      method: "POST", body: JSON.stringify({ action }),
+    });
+    toast(r?.result?.status || `${action} sent`);
+    setTimeout(() => loadLive().catch(() => {}), 1500);
+  } catch (e) { toast(e.message, true); }
+  b.disabled = false; b.textContent = label;
+});
+
+async function loadLiveExtras(stake) {
+  try {
+    // From the whole history: freqtrade's /stats only counts what the running
+    // bot holds, which after a redeploy is a fraction of the account.
+    const d = await api("/api/bots/history/performance?by=exit_reason");
+    $("exit-rows").innerHTML = rankList((d.rows || []).slice(0, 12), {
+      label: r => r.name,
+      value: r => `${r.count} · ${r.wins}W / ${r.losses}L`,
+      weight: r => r.count,
+      signed: false,
+    });
+  } catch { $("exit-rows").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  // Still fetched, but only to mark trades on the candle chart -- the trade
+  // table itself now reads both stores, so the bot's in-memory list is no
+  // longer anybody's idea of "all my trades".
+  try {
+    const t = await api("/api/live/trades");
+    liveClosedTrades = (t.trades || []).filter(x => !x.is_open);
+  } catch { /* the chart still draws; the table has its own source */ }
+
+  try {
+    const w = await api("/api/live/whitelist");
+    const pairs = w.whitelist || [];
+    liveWhitelist = pairs;
+    $("whitelist-box").innerHTML = pairs.length
+      ? `<div class="chips">${pairs.map(x => `<span class="chip-pair">${esc(x)}</span>`).join("")}</div>
+         <p class="hint" style="margin:8px 0 0">${pairs.length} pairs · method
+         ${esc((w.method || []).join(", ") || "—")}</p>`
+      : '<div class="empty">No pairs currently whitelisted</div>';
+  } catch { $("whitelist-box").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  try {
+    const l = await api("/api/live/locks");
+    // Freqtrade returns expired locks too; only an active one explains a pair
+    // the bot is declining to trade right now.
+    const now = Date.now();
+    const locks = (l.locks || [])
+      .filter(x => x.active !== false && (!x.lock_end_timestamp || x.lock_end_timestamp > now))
+      .sort((a, b) => (a.lock_end_timestamp || 0) - (b.lock_end_timestamp || 0));
+    $("locks-box").innerHTML = locks.length
+      ? `<div class="locks">${locks.map(x => `<div class="lock">
+          <b>${esc(x.pair)}</b>
+          <span class="why">${esc(x.reason || "no reason given")}</span>
+          <span class="until">until ${shortDate(x.lock_end_time)}${
+            x.side && x.side !== "*" ? ` · ${esc(x.side)}` : ""}</span>
+        </div>`).join("")}</div>`
+      : '<div class="empty">Nothing locked &mdash; every whitelisted pair is tradable</div>';
+
+    // Mark the locked pairs in the chip row above too, so the answer to "why is
+    // it not trading that one" is visible without reading two lists.
+    const barred = new Set(locks.map(x => x.pair));
+    document.querySelectorAll("#whitelist-box .chip-pair").forEach(chip => {
+      const locked = barred.has(chip.textContent.trim());
+      chip.classList.toggle("locked", locked);
+      chip.title = locked ? "Locked — the strategy will not enter this pair right now" : "";
+    });
+  } catch { $("locks-box").innerHTML = '<div class="empty">Unavailable</div>'; }
+
+  // The chart wants both halves of the history and the list of pairs to offer,
+  // all of which have just been fetched -- so it draws from those rather than
+  // asking the bot for them a second time.
+  liveTradeCache = [...liveOpenTrades, ...liveClosedTrades];
+  setCandlePairs(liveWhitelist, [...new Set(liveOpenTrades.map(x => x.pair))]);
+
+  // The page repolls every 15 seconds, which is right for prices and wrong for
+  // five hundred candles: redrawing that often costs a few hundred kilobytes
+  // over the private network and throws away whatever the cursor was hovering.
+  if (Date.now() - slowRefreshAt > 60000) {
+    slowRefreshAt = Date.now();
+    loadCandles().catch(() => {});
+    loadStoredTrades().catch(() => {});
+    loadDeployments().catch(() => {});
+    loadIncidents().catch(() => {});
+  }
+
+  try {
+    const l = await api("/api/live/logs");
+    const lines = (l.logs || []).slice(-200)
+      .map(r => Array.isArray(r) ? `${r[0]}  ${r[2]}  ${r[4]}` : String(r));
+    $("bot-log").textContent = lines.join("\n") || "Nothing logged yet";
+    $("bot-log").classList.remove("muted");
+  } catch (e) { $("bot-log").textContent = `Log unavailable: ${e.message}`; }
+}
+
+// ── candlestick chart ───────────────────────────────────────
+// The one thing FreqUI has that a table cannot replace: where the strategy
+// entered and exited, against what the price was doing at the time.
+//
+// freqtrade returns this columnar -- {columns: [...], data: [[...], ...]} --
+// so every read goes through the column index rather than a property name.
+
+const CANDLE = { W: 1180, H: 460, VOL: 78, L: 34, R: 62, T: 16, B: 26 };
+
+function candleChart(payload, trades) {
+  const cols = payload.columns || [];
+  const rows = payload.data || [];
+  if (!rows.length) return '<div class="empty">No candles for this pair yet</div>';
+
+  const at = (name) => cols.indexOf(name);
+  const iDate = at("__date_ts") >= 0 ? at("__date_ts") : at("date");
+  const iO = at("open"), iH = at("high"), iL = at("low"), iC = at("close"), iV = at("volume");
+  // freqtrade renamed these over the years; accept whichever the strategy emits.
+  const iEnter = [at("enter_long"), at("buy")].find(i => i >= 0);
+  const iExit = [at("exit_long"), at("sell")].find(i => i >= 0);
+  if (iO < 0 || iC < 0 || iH < 0 || iL < 0) return '<div class="empty">Unexpected candle format</div>';
+
+  const t = (r) => typeof r[iDate] === "number" ? r[iDate] : +new Date(r[iDate]);
+  const lo = Math.min(...rows.map(r => Number(r[iL])));
+  const hi = Math.max(...rows.map(r => Number(r[iH])));
+  const pad = (hi - lo) * 0.06 || (hi * 0.01) || 1;
+  const top = hi + pad, bottom = lo - pad;
+
+  const plotH = CANDLE.H - CANDLE.T - CANDLE.B - CANDLE.VOL;
+  const step = (CANDLE.W - CANDLE.L - CANDLE.R) / rows.length;
+  const bodyW = Math.max(1, Math.min(9, step * 0.68));
+  const x = (i) => CANDLE.L + i * step + step / 2;
+  const y = (v) => CANDLE.T + (top - v) / (top - bottom) * plotH;
+
+  const maxVol = Math.max(...rows.map(r => Number(r[iV]) || 0), 1);
+  const volY = CANDLE.T + plotH + 16;
+  const vh = (v) => (Number(v) || 0) / maxVol * (CANDLE.VOL - 16);
+
+  const candles = rows.map((r, i) => {
+    const o = Number(r[iO]), c = Number(r[iC]);
+    const colour = c >= o ? "var(--pos)" : "var(--neg)";
+    const bodyTop = y(Math.max(o, c));
+    const bodyH = Math.max(1, Math.abs(y(o) - y(c)));
+    return `<line x1="${x(i).toFixed(1)}" y1="${y(Number(r[iH])).toFixed(1)}"
+        x2="${x(i).toFixed(1)}" y2="${y(Number(r[iL])).toFixed(1)}"
+        stroke="${colour}" stroke-width="1"/>
+      <rect x="${(x(i) - bodyW / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}"
+        width="${bodyW.toFixed(1)}" height="${bodyH.toFixed(1)}" fill="${colour}"/>`;
+  }).join("");
+
+  const volume = rows.map((r, i) => {
+    const h = vh(r[iV]);
+    return `<rect x="${(x(i) - bodyW / 2).toFixed(1)}" y="${(volY + (CANDLE.VOL - 16) - h).toFixed(1)}"
+      width="${bodyW.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--muted)" opacity=".35"/>`;
+  }).join("");
+
+  // Signal markers: a triangle under the low where the strategy said enter, a
+  // cross above the high where it said exit.
+  const marks = rows.map((r, i) => {
+    let out = "";
+    if (iEnter >= 0 && Number(r[iEnter])) {
+      const py = y(Number(r[iL])) + 9;
+      out += `<path d="M${(x(i) - 4).toFixed(1)},${py.toFixed(1)} L${(x(i) + 4).toFixed(1)},${py.toFixed(1)}
+        L${x(i).toFixed(1)},${(py - 7).toFixed(1)} Z" fill="var(--pos)"/>`;
+    }
+    if (iExit >= 0 && Number(r[iExit])) {
+      const py = y(Number(r[iH])) - 9;
+      out += `<path d="M${(x(i) - 4).toFixed(1)},${(py - 4).toFixed(1)} l8,8 M${(x(i) + 4).toFixed(1)},${(py - 4).toFixed(1)} l-8,8"
+        stroke="var(--info)" stroke-width="2" fill="none"/>`;
+    }
+    return out;
+  }).join("");
+
+  // Actual fills, which are not the same as signals: a signal the bot could not
+  // act on (no free slot, no balance) shows above with no fill beneath it, and
+  // that gap is worth being able to see. Bands go under the candles, dots over
+  // them -- a marker hidden behind a wick is a marker that did not get drawn.
+  const first = t(rows[0]), last = t(rows[rows.length - 1]);
+  const span = (last - first) || 1;
+  const nearest = (ms) => {
+    if (!Number.isFinite(ms) || ms < first || ms > last) return null;
+    return Math.round((ms - first) / span * (rows.length - 1));
+  };
+  // The exit cross already occupies the space above the candle, so the profit
+  // label sits below the dot -- flipping above only when it would fall off.
+  const labelY = (py) => (py + 24 < CANDLE.T + plotH ? py + 23 : py - 14).toFixed(1);
+  const bands = [], dots = [];
+  let drawn = 0;
+  (trades || []).forEach(tr => {
+    const openAt = nearest(+new Date(tr.open_date));
+    const closeAt = tr.close_date ? nearest(+new Date(tr.close_date)) : null;
+    if (openAt == null && closeAt == null) return;
+    drawn += 1;
+
+    // An open position runs to the right edge; a closed one stops where it closed.
+    const from = openAt == null ? 0 : openAt;
+    const to = closeAt == null ? rows.length - 1 : closeAt;
+    bands.push(`<rect x="${x(from).toFixed(1)}" y="${CANDLE.T}"
+      width="${Math.max(1, x(to) - x(from)).toFixed(1)}" height="${plotH.toFixed(1)}"
+      fill="var(--accent)" opacity="${closeAt == null ? ".11" : ".07"}"/>`);
+
+    if (openAt != null) {
+      dots.push(`<circle cx="${x(openAt).toFixed(1)}" cy="${y(Number(tr.open_rate)).toFixed(1)}"
+        r="4" fill="var(--pos)" stroke="var(--panel)" stroke-width="1.5">
+        <title>Entered ${esc(tr.pair)} at ${fmtNum(tr.open_rate, 6)}</title></circle>`);
+    }
+    if (closeAt != null) {
+      const pct = pctOf(tr);
+      const tone = pct >= 0 ? "pos" : "neg";
+      dots.push(`<circle cx="${x(closeAt).toFixed(1)}" cy="${y(Number(tr.close_rate)).toFixed(1)}"
+        r="4" fill="var(--${tone})" stroke="var(--panel)" stroke-width="1.5">
+        <title>Exited at ${fmtNum(tr.close_rate, 6)} — ${fmtNum(pct)}% (${esc(tr.exit_reason || "")})</title></circle>
+        <text class="lbl on-plot" x="${x(closeAt).toFixed(1)}" y="${labelY(y(Number(tr.close_rate)))}"
+          text-anchor="middle" fill="var(--${tone})"
+          >${pct >= 0 ? "+" : ""}${fmtNum(pct, 2)}%</text>`);
+    }
+  });
+
+  const ticks = niceTicks(bottom, top, 5).map(v =>
+    `<line class="gl" x1="${CANDLE.L}" y1="${y(v).toFixed(1)}" x2="${CANDLE.W - CANDLE.R}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${CANDLE.W - CANDLE.R + 6}" y="${(y(v) + 3).toFixed(1)}">${fmtNum(v, priceDigits(hi))}</text>`
+  ).join("");
+
+  const label = (ms) => new Date(ms).toISOString().slice(5, 16).replace("T", " ");
+  const every = Math.max(1, Math.floor(rows.length / 8));
+  const dates = rows.map((r, i) => i % every ? "" :
+    `<text class="lbl" x="${x(i).toFixed(1)}" y="${CANDLE.H - 6}" text-anchor="middle">${label(t(r))}</text>`
+  ).join("");
+
+  // One transparent column per candle, last so it sits above every mark: the
+  // hit target for hovering has to be the whole column, not a 3px-wide body.
+  const cells = rows.map((r, i) =>
+    `<rect class="cand" x="${(x(i) - step / 2).toFixed(1)}" y="${CANDLE.T}"
+      width="${Math.max(step, 1).toFixed(1)}" height="${(plotH + CANDLE.VOL).toFixed(1)}"
+      fill="transparent" data-i="${i}"/>`).join("");
+
+  candleDrawn = drawn;
+  return `<div class="chartwrap" id="candle-wrap">
+    <svg class="chart" viewBox="0 0 ${CANDLE.W} ${CANDLE.H}" role="img"
+         aria-label="${rows.length} ${esc(payload.timeframe || "")} candles for ${esc(payload.pair || "")}">
+      ${ticks}
+      ${bands.join("")}
+      ${candles}
+      ${volume}
+      ${marks}
+      ${dots.join("")}
+      ${dates}
+      <line class="gl" x1="${CANDLE.L}" y1="${(volY + CANDLE.VOL - 16).toFixed(1)}"
+            x2="${CANDLE.W - CANDLE.R}" y2="${(volY + CANDLE.VOL - 16).toFixed(1)}"/>
+      <text class="lbl" x="${CANDLE.W - CANDLE.R + 6}" y="${(volY + CANDLE.VOL - 20).toFixed(1)}">vol</text>
+      ${cells}
+    </svg>
+    <div class="tip" hidden></div>
+  </div>`;
+}
+
+// Crypto prices span nine orders of magnitude across a whitelist; a fixed two
+// decimals turns SHIB into a row of zeroes and BTC into false precision.
+const priceDigits = (v) => Math.abs(Number(v)) >= 100 ? 2 : Math.abs(Number(v)) >= 1 ? 4 : 6;
+
+// freqtrade sends the timestamp as an ISO string on some builds and as epoch
+// milliseconds on others; both have to read the same in the tooltip.
+const stamp = (v) => typeof v === "number"
+  ? new Date(v).toISOString().slice(0, 16).replace("T", " ")
+  : String(v ?? "").slice(0, 16).replace("T", " ");
+
+const pctOf = (tr) => {
+  const direct = Number(tr.profit_pct);
+  if (Number.isFinite(direct)) return direct;
+  const ratio = Number(tr.profit_ratio);
+  return Number.isFinite(ratio) ? ratio * 100 : 0;
+};
+
+function attachCandleHover(payload) {
+  const wrap = $("candle-wrap");
+  if (!wrap) return;
+  const cols = payload.columns || [], rows = payload.data || [];
+  const at = (n) => cols.indexOf(n);
+  const idx = { d: at("date") >= 0 ? at("date") : at("__date_ts"),
+                o: at("open"), h: at("high"), l: at("low"),
+                c: at("close"), v: at("volume") };
+  const iEnter = [at("enter_long"), at("buy")].find(i => i >= 0);
+  const iExit = [at("exit_long"), at("sell")].find(i => i >= 0);
+  const tip = wrap.querySelector(".tip");
+
+  wrap.querySelectorAll(".cand").forEach(cell => {
+    cell.addEventListener("mouseenter", () => {
+      const r = rows[Number(cell.dataset.i)];
+      if (!r) return;
+      const o = Number(r[idx.o]), c = Number(r[idx.c]);
+      const d = priceDigits(c);
+      const move = o ? (c - o) / o * 100 : 0;
+      const flags = [];
+      if (iEnter >= 0 && Number(r[iEnter])) flags.push('<span class="pos">entry signal</span>');
+      if (iExit >= 0 && Number(r[iExit])) flags.push('<span class="info">exit signal</span>');
+      tip.hidden = false;
+      tip.innerHTML = `<b>${esc(stamp(r[idx.d]))}</b><br>
+        open ${fmtNum(o, d)}<br>high ${fmtNum(r[idx.h], d)}<br>
+        low ${fmtNum(r[idx.l], d)}<br>
+        <span class="${c >= o ? "pos" : "neg"}">close ${fmtNum(c, d)}
+          (${move >= 0 ? "+" : ""}${fmtNum(move, 2)}%)</span><br>
+        <span class="muted">vol ${fmtNum(r[idx.v], 2)}</span>
+        ${flags.length ? "<br>" + flags.join(" · ") : ""}`;
+      const box = wrap.getBoundingClientRect();
+      const px = Number(cell.getAttribute("x")) / CANDLE.W * box.width;
+      tip.style.left = `${Math.min(Math.max(0, px - 60), Math.max(0, box.width - 165))}px`;
+    });
+  });
+  wrap.addEventListener("mouseleave", () => { tip.hidden = true; });
+}
+
+let candlePair = null, candleTf = "", candleDrawn = 0;
+// Filled by loadLive/loadLiveExtras so drawing the chart costs no extra round
+// trip over the private network.
+let liveTradeCache = [], liveOpenTrades = [], liveClosedTrades = [];
+
+// The pairs worth offering: everything the bot is watching, plus anything it
+// currently holds even if a pairlist filter has since dropped it.
+function setCandlePairs(pairs, held = []) {
+  const sel = $("candle-pair");
+  if (!sel) return;
+  const all = [...new Set([...held, ...(pairs || [])])];
+  if (!all.length) {
+    sel.innerHTML = '<option value="">No pairs</option>';
+    return;
+  }
+  if (!candlePair || !all.includes(candlePair)) candlePair = all[0];
+  const html = all.map(p =>
+    `<option value="${esc(p)}"${p === candlePair ? " selected" : ""}>${esc(p)}${held.includes(p) ? " •" : ""}</option>`
+  ).join("");
+  // Only touch the DOM when the list really changed: rewriting it on every
+  // fifteen-second pass would close a dropdown the user had open.
+  if (sel.innerHTML !== html) sel.innerHTML = html;
+}
+
+async function loadCandles(pair) {
+  candlePair = pair || candlePair;
+  if (!candlePair) { $("candle-box").innerHTML = '<div class="empty">No pair to chart</div>'; return; }
+  const limit = $("candle-limit")?.value || "500";
+  $("candle-title").textContent = candleTf ? `· ${candleTf}` : "";
+  $("candle-box").innerHTML = '<div class="empty">Loading candles…</div>';
+  try {
+    const q = new URLSearchParams({ pair: candlePair, limit });
+    const payload = await api(`/api/live/candles?${q}`);
+    candleTf = payload.timeframe || candleTf;
+    $("candle-title").textContent = candleTf ? `· ${candleTf}` : "";
+
+    const trades = liveTradeCache.filter(t => t.pair === candlePair);
+    $("candle-box").innerHTML = candleChart(payload, trades);
+    attachCandleHover(payload);
+    $("candle-key").hidden = false;
+
+    const n = payload.length ?? (payload.data || []).length;
+    const entries = payload.enter_long_signals ?? payload.buy_signals ?? 0;
+    const exits = payload.exit_long_signals ?? payload.sell_signals ?? 0;
+    $("candle-meta").textContent =
+      `${n} candles · ${entries} entry signals · ${exits} exit signals · `
+      + `${candleDrawn} of this pair's trades fall inside the window`
+      + (payload.last_refresh ? ` · analysed ${shortDate(payload.last_refresh * 1000)}` : "");
+  } catch (e) {
+    // A pair the strategy is not analysing has no dataframe to return, and that
+    // is worth saying plainly rather than showing an empty chart.
+    $("candle-box").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    $("candle-key").hidden = true;
+    $("candle-meta").textContent = "";
+  }
+}
+
+$("candle-pair").onchange = (e) => {
+  slowRefreshAt = Date.now();
+  loadCandles(e.target.value).catch(() => {});
+};
+$("candle-limit").onchange = () => {
+  slowRefreshAt = Date.now();
+  loadCandles().catch(() => {});
+};
+
+// ── backtest: window, breakdown, and whether to believe it ──
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const compact = (d) => d.replaceAll("-", "");
+
+// freqtrade wants YYYYMMDD-YYYYMMDD; people want a date picker. Compose one from
+// the other rather than making anyone type the format.
+function selectedTimerange() {
+  const from = $("bt-from").value, to = $("bt-to").value;
+  if (!from && !to) return null;
+  return `${from ? compact(from) : ""}-${to ? compact(to) : ""}`;
+}
+
+document.querySelectorAll("#bt-presets [data-years]").forEach(b => b.onclick = () => {
+  const years = Number(b.dataset.years);
+  const end = new Date();
+  if (!years) {
+    // "Everything" leaves the start open so freqtrade takes whatever the venue
+    // has, rather than us guessing a date the exchange may not reach.
+    $("bt-from").value = ""; $("bt-to").value = isoDay(end);
+  } else {
+    const start = new Date(end);
+    start.setFullYear(start.getFullYear() - years);
+    $("bt-from").value = isoDay(start);
+    $("bt-to").value = isoDay(end);
+  }
+  candleEstimate();
+  checkHistory();
+});
+
+function candleEstimate() {
+  const from = $("bt-from").value, to = $("bt-to").value;
+  const tf = $("bt-tf").value;
+  const pairs = chosenPairs.length || 1;
+  const minutes = { m: 1, h: 60, d: 1440, w: 10080 }[tf?.slice(-1)] * (parseInt(tf) || 1);
+  if (!from || !to || !minutes) return $("bt-estimate").textContent = "";
+  const span = (new Date(to) - new Date(from)) / 60000;
+  if (span <= 0) return $("bt-estimate").textContent = "";
+  const each = Math.round(span / minutes);
+  const total = each * pairs;
+  const pretty = total.toLocaleString();
+  let advice = "";
+  if (total > 2_000_000) {
+    advice = " — that is a very large download and may time out. A coarser timeframe " +
+             "covers the same period for a fraction of the data.";
+  } else if (total > 400_000) {
+    advice = " — expect several minutes on the first run, then it is cached.";
+  }
+  $("bt-estimate").textContent = `About ${pretty} candles (${each.toLocaleString()} per pair)${advice}`;
+  $("bt-estimate").className = total > 2_000_000 ? "neg" : "muted";
+}
+["bt-from", "bt-to", "bt-tf"].forEach(id =>
+  $(id)?.addEventListener("change", () => { candleEstimate(); checkHistory(); }));
+
+// A backtest spans its pairs together, so the youngest pair bounds the whole
+// window: adding a coin that listed last year silently shortens a ten-year test
+// to one. Checking as the choice is made says so before the job is queued
+// rather than in the coverage note afterwards.
+let historyTimer = null;
+function checkHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(runHistoryCheck, 900);
+}
+
+async function runHistoryCheck() {
+  const out = $("bt-history-out");
+  if (!chosenPairs.length || !$("bt-from").value) { out.textContent = ""; return; }
+  out.textContent = "Checking how far back these pairs go…";
+  try {
+    const q = new URLSearchParams({ exchange: $("bt-exchange").value || "kucoin",
+                                    pairs: chosenPairs.join(","), timeframe: "1d" });
+    const r = await api(`/api/catalog/history?${q}`);
+    const want = $("bt-from").value;
+    const short = r.pairs
+      .filter(p => p.earliest && String(p.earliest).slice(0, 10) > want)
+      .sort((a, b) => String(b.earliest).localeCompare(String(a.earliest)));
+    if (!short.length) {
+      out.innerHTML = `<span class="pos">All ${r.pairs.length} pair(s) have history back to ${esc(want)}.</span>`;
+      return;
+    }
+    const worst = short[0];
+    out.innerHTML = `<span class="neg">${esc(worst.pair)} only goes back to
+      ${esc(String(worst.earliest).slice(0, 10))}</span> — a backtest covers its pairs
+      together, so that is where this one would start${
+        short.length > 1 ? ` (${short.length} pairs are shorter than the window)` : ""}.`;
+  } catch (e) { out.textContent = ""; }
+}
+document.querySelectorAll("#bt-presets [data-years]").forEach(b =>
+  b.addEventListener("click", () => setTimeout(candleEstimate, 0)));
+
+$("bt-clear-failed").onclick = async (e) => {
+  const btn = e.currentTarget;
+  if (!confirm("Remove every failed and cancelled job from the queue?")) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/backtests/failed", { method: "DELETE" });
+    toast(r.deleted ? `Removed ${r.deleted} job(s)` : "Nothing to remove");
+  } catch (err) { toast(err.message, true); }
+  btn.disabled = false;
+  loadJobs().catch(() => {});
+};
+
+$("bt-history").onclick = async () => {
+  const pairs = chosenPairs.join(",");
+  if (!pairs) return toast("Choose at least one pair first.", true);
+  const out = $("bt-history-out");
+  out.textContent = "Asking the exchange…";
+  try {
+    const q = new URLSearchParams({ exchange: $("bt-exchange").value || "kucoin",
+                                    pairs, timeframe: "1d" });
+    const r = await api(`/api/catalog/history?${q}`);
+    const parts = r.pairs.map(p => p.error
+      ? `${p.pair}: unavailable`
+      : `${p.pair}: back to ${String(p.earliest).slice(0, 10)} (${p.years}y)`);
+    out.textContent = parts.join("  ·  ");
+    // The shortest history is the binding one -- a backtest spans the pairs
+    // together, so it cannot start before the youngest pair listed.
+    if (r.common_start) $("bt-from").value = String(r.common_start).slice(0, 10);
+  } catch (e) { out.textContent = e.message; }
+};
+
+let currentRun = null, currentPeriod = "month";
+
+// ── collapsible detail sections ─────────────────────────────
+// The panel is long by design -- it now carries every metric, four charts and
+// three tables. Which parts matter depends on the question being asked, so the
+// choice is remembered rather than reset on every result.
+const SEC_KEY = "bt.collapsed";
+const collapsed = new Set(JSON.parse(localStorage.getItem(SEC_KEY) || "[]"));
+
+function applySections() {
+  document.querySelectorAll(".sec-head").forEach(head => {
+    const shut = collapsed.has(head.dataset.sec);
+    head.setAttribute("aria-expanded", shut ? "false" : "true");
+    const body = $(`sec-${head.dataset.sec}`);
+    if (body) body.hidden = shut;
+  });
+  const anyOpen = [...document.querySelectorAll(".sec-head")]
+    .some(h => h.getAttribute("aria-expanded") === "true");
+  const toggle = $("bt-collapse-all");
+  if (toggle) toggle.textContent = anyOpen ? "Collapse all" : "Expand all";
+}
+
+document.querySelectorAll(".sec-head").forEach(head => head.onclick = () => {
+  const key = head.dataset.sec;
+  collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+  localStorage.setItem(SEC_KEY, JSON.stringify([...collapsed]));
+  applySections();
+});
+
+$("bt-collapse-all").onclick = () => {
+  const heads = [...document.querySelectorAll(".sec-head")];
+  const anyOpen = heads.some(h => h.getAttribute("aria-expanded") === "true");
+  collapsed.clear();
+  if (anyOpen) heads.forEach(h => collapsed.add(h.dataset.sec));
+  localStorage.setItem(SEC_KEY, JSON.stringify([...collapsed]));
+  applySections();
+};
+
+$("bt-detail-close").onclick = () => {
+  $("bt-detail").hidden = true;
+  currentRun = null;
+};
+
+applySections();
+
+document.querySelectorAll("#bt-period [data-period]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#bt-period [data-period]").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  currentPeriod = b.dataset.period;
+  if (currentRun) loadBreakdown(currentRun);
+});
+
+function verdictPill(v) {
+  return { good: "ok", weak: "warn", bad: "bad" }[v] || "neutral";
+}
+
+async function openRun(runId, title, run) {
+  currentRun = runId;
+  $("bt-detail").hidden = false;
+  $("bt-detail-title").textContent = title;
+  if (run) loadRunDetail(runId, run).catch(e => console.warn("detail", e));
+  $("bt-verdict").innerHTML = '<div class="empty">Checking…</div>';
+  $("bt-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+
+  try {
+    const v = await api(`/api/backtests/${runId}/verdict`);
+    const order = { bad: 0, weak: 1, good: 2 };
+    const findings = v.findings.slice().sort((a, b) => order[a.verdict] - order[b.verdict]);
+    $("bt-verdict").innerHTML = `
+      <p style="margin:0 0 12px"><span class="pill ${verdictPill(v.counts.bad ? "bad" : v.counts.weak ? "weak" : "good")}">${esc(v.headline)}</span>
+        <span class="muted" style="margin-left:8px;font-size:12.5px">${v.counts.bad} serious ·
+        ${v.counts.weak} caveats · ${v.counts.good} fine</span></p>` +
+      findings.map(f => `
+        <div class="check ${f.verdict === "bad" ? "failed" : f.verdict === "weak" ? "warning" : "passed"}">
+          <div class="t">${esc(f.title)} <span class="pill ${verdictPill(f.verdict)}">${esc(f.verdict)}</span></div>
+          <div class="m">${esc(f.message)}</div>
+          ${f.detail ? `<div class="r">${esc(f.detail)}</div>` : ""}
+        </div>`).join("");
+  } catch (e) { $("bt-verdict").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+
+  loadBreakdown(runId);
+  if (currentPeriod !== "month") {
+    api(`/api/backtests/${runId}/breakdown?period=month`)
+      .then(b => { $("bt-heatmap").innerHTML = monthlyHeatmap(b.rows); })
+      .catch(() => {});
+  }
+}
+
+// Bars are per-period profit; the line is the account balance across them. Same
+// hand-built SVG approach as the live chart, for the same reason.
+function periodChart(rows, currency) {
+  if (!rows.length) return "";
+  const W = 780, H = 170, PADL = 54, PADT = 10, PADB = 26;
+  const vals = rows.map(r => r.profit_abs || 0);
+  const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
+  const span = (hi - lo) || 1;
+  const y = (v) => PADT + (hi - v) / span * (H - PADT - PADB);
+  const step = (W - PADL - 8) / rows.length;
+  const bw = Math.max(2, step - 3);
+  const x = (i) => PADL + i * step + 1.5;
+
+  const bars = rows.map((r, i) => {
+    const v = vals[i], top = y(Math.max(0, v)), h = Math.abs(y(v) - y(0));
+    return `<rect x="${x(i).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}"
+      height="${Math.max(1, h).toFixed(1)}" rx="1.5" fill="var(--${v >= 0 ? "pos" : "neg"})" opacity=".6">
+      <title>${esc(r.label)}  ${v >= 0 ? "+" : ""}${fmtNum(v)} ${esc(currency || "")} · ${r.trades} trades${
+        r.profit_pct != null ? ` · ${fmtNum(r.profit_pct)}% of account` : ""}</title></rect>`;
+  }).join("");
+
+  const ticks = [hi, (hi + lo) / 2, lo].map(v =>
+    `<line class="gl" x1="${PADL}" y1="${y(v).toFixed(1)}" x2="${W - 8}" y2="${y(v).toFixed(1)}"/>
+     <text class="lbl" x="${PADL - 7}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${fmtNum(v, 0)}</text>`
+  ).join("");
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H + 14}" role="img"
+      aria-label="Profit per period across ${rows.length} periods">
+    ${ticks}
+    <line class="zero" x1="${PADL}" y1="${y(0).toFixed(1)}" x2="${W - 8}" y2="${y(0).toFixed(1)}"/>
+    ${bars}
+    <text class="lbl" x="${PADL}" y="${H + 7}">${esc(rows[0].label)}</text>
+    <text class="lbl" x="${W - 8}" y="${H + 7}" text-anchor="end">${esc(rows[rows.length - 1].label)}</text>
+  </svg>`;
+}
+
+async function loadBreakdown(runId) {
+  try {
+    const b = await api(`/api/backtests/${runId}/breakdown?period=${currentPeriod}`);
+    const cur = b.stake_currency || "";
+    const s = b.summary || {};
+
+    $("bt-period-summary").innerHTML = !s.periods ? "" : `
+      <div class="kpis" style="margin:10px 0 14px">
+        <div class="kpi"><div class="k">Periods up</div>
+          <div class="v">${s.up}/${s.periods}</div><div class="s">${fmtNum(s.hit_rate, 0)}% positive</div></div>
+        <div class="kpi"><div class="k">Worst streak</div>
+          <div class="v ${s.longest_losing_streak > 2 ? "neg" : ""}">${s.longest_losing_streak}</div>
+          <div class="s">losing ${currentPeriod}s in a row</div></div>
+        <div class="kpi"><div class="k">Best</div>
+          <div class="v pos">${fmtNum(s.best?.profit_abs)}</div><div class="s">${esc(s.best?.label || "")}</div></div>
+        <div class="kpi"><div class="k">Worst</div>
+          <div class="v neg">${fmtNum(s.worst?.profit_abs)}</div><div class="s">${esc(s.worst?.label || "")}</div></div>
+        <div class="kpi"><div class="k">Return on capital</div>
+          <div class="v ${(s.return_on_capital_pct || 0) >= 0 ? "pos" : "neg"}">${fmtNum(s.return_on_capital_pct, 1)}%</div>
+          <div class="s">profit ÷ ${fmtNum(s.total_staked, 0)} ${esc(cur)} invested</div></div>
+      </div>`;
+
+    $("bt-period-chart").innerHTML = periodChart(b.rows, cur);
+    if (currentPeriod === "month") {
+      $("bt-heatmap").innerHTML = monthlyHeatmap(b.rows);
+    }
+
+    $("bt-period-rows").innerHTML = b.rows.length ? b.rows.map(r => `<tr>
+        <td><strong>${esc(r.label)}</strong></td>
+        <td class="r num">${r.trades}</td>
+        <td class="r num muted">${r.wins}/${r.losses}</td>
+        <td class="r num">${signed(r.profit_abs, (r.profit_abs >= 0 ? "+" : "") + fmtNum(r.profit_abs))}</td>
+        <td class="r num">${r.profit_pct == null ? "—" : signed(r.profit_pct, fmtNum(r.profit_pct) + "%")}</td>
+        <td class="r num muted">${fmtNum(r.staked, 0)}</td>
+        <td class="r num">${r.return_on_capital_pct == null ? "—" : signed(r.return_on_capital_pct, fmtNum(r.return_on_capital_pct) + "%")}</td>
+        <td class="r num muted">${r.closing_balance == null ? "—" : fmtNum(r.closing_balance, 0)}</td>
+      </tr>`).join("")
+      : '<tr><td colspan="8" class="empty">No closed trades in this run</td></tr>';
+  } catch (e) {
+    $("bt-period-rows").innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ── backtest result detail ──────────────────────────────────
+// Charts are hand-built SVG: the page has no build step and a CSP that admits
+// no external scripts, and these are simple enough that a library would be more
+// code than the charts.
+//
+// Colour does one job here -- polarity. Gains and losses, diverging from a
+// neutral zero. There is no categorical series anywhere, so there is no hue
+// order to keep and no legend to draw; every chart names itself in its heading.
+// The heatmap prints the number in each cell so the colour is redundant rather
+// than load-bearing.
+
+const CH = { W: 860, H: 210, L: 58, R: 10, T: 12, B: 24 };
+
+function niceTicks(lo, hi, count = 4) {
+  if (!isFinite(lo) || !isFinite(hi) || lo === hi) return [lo || 0];
+  const raw = (hi - lo) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || mag * 10;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+// A line chart with a crosshair. One series, so no legend -- the heading says
+// what it is.
+function lineChart(points, { id, format = (v) => fmtNum(v), fill = false, colour = "var(--accent)" }) {
+  if (!points || points.length < 2) return '<div class="empty">Not enough points</div>';
+  const xs = points.map(p => +new Date(p.x));
+  const ys = points.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad; hi += pad;
+
+  const px = (v) => CH.L + (v - x0) / ((x1 - x0) || 1) * (CH.W - CH.L - CH.R);
+  const py = (v) => CH.T + (hi - v) / ((hi - lo) || 1) * (CH.H - CH.T - CH.B);
+
+  const path = points.map((p, i) => `${i ? "L" : "M"}${px(xs[i]).toFixed(1)},${py(p.y).toFixed(1)}`).join("");
+  const area = fill
+    ? `<path d="${path}L${px(x1).toFixed(1)},${py(Math.max(lo, 0)).toFixed(1)}L${px(x0).toFixed(1)},${py(Math.max(lo, 0)).toFixed(1)}Z"
+         fill="${colour}" opacity=".12"/>`
+    : "";
+
+  const grid = niceTicks(lo, hi).map(v => `
+    <line class="gl" x1="${CH.L}" y1="${py(v).toFixed(1)}" x2="${CH.W - CH.R}" y2="${py(v).toFixed(1)}"/>
+    <text class="lbl" x="${CH.L - 7}" y="${(py(v) + 3).toFixed(1)}" text-anchor="end">${format(v)}</text>`).join("");
+
+  const days = (x1 - x0) / 86400000;
+  const fmtX = (t) => new Date(t).toISOString().slice(0, days > 400 ? 7 : 10);
+
+  return `<div class="chartwrap" id="${id}">
+    <svg class="chart" viewBox="0 0 ${CH.W} ${CH.H}" role="img"
+         aria-label="${points.length} points from ${fmtX(x0)} to ${fmtX(x1)}"
+         data-x0="${x0}" data-x1="${x1}">
+      ${grid}
+      ${area}
+      <path d="${path}" fill="none" stroke="${colour}" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <line class="cross" x1="0" y1="${CH.T}" x2="0" y2="${CH.H - CH.B}" opacity="0"/>
+      <circle class="dot" r="3.5" fill="${colour}" opacity="0"/>
+      <rect class="hit" x="${CH.L}" y="${CH.T}" width="${CH.W - CH.L - CH.R}"
+            height="${CH.H - CH.T - CH.B}" fill="transparent"/>
+      <text class="lbl" x="${CH.L}" y="${CH.H - 6}">${fmtX(x0)}</text>
+      <text class="lbl" x="${CH.W - CH.R}" y="${CH.H - 6}" text-anchor="end">${fmtX(x1)}</text>
+    </svg>
+    <div class="tip" hidden></div>
+  </div>`;
+}
+
+function attachCrosshair(id, points, render) {
+  const wrap = $(id);
+  if (!wrap) return;
+  const svg = wrap.querySelector("svg"), tip = wrap.querySelector(".tip");
+  const cross = svg.querySelector(".cross"), dot = svg.querySelector(".dot");
+  const xs = points.map(p => +new Date(p.x));
+  const x0 = +svg.dataset.x0, x1 = +svg.dataset.x1;
+  const px = (v) => CH.L + (v - x0) / ((x1 - x0) || 1) * (CH.W - CH.L - CH.R);
+
+  const move = (event) => {
+    const box = svg.getBoundingClientRect();
+    const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+    const local = (clientX - box.left) / box.width * CH.W;
+    const target = x0 + (local - CH.L) / (CH.W - CH.L - CH.R) * (x1 - x0);
+    let best = 0;
+    for (let i = 1; i < xs.length; i++) {
+      if (Math.abs(xs[i] - target) < Math.abs(xs[best] - target)) best = i;
+    }
+    const p = points[best];
+    cross.setAttribute("x1", px(xs[best])); cross.setAttribute("x2", px(xs[best]));
+    cross.setAttribute("opacity", "1");
+    dot.setAttribute("cx", px(xs[best]));
+    dot.setAttribute("cy", svg.querySelector("path[stroke]").getPointAtLength ? dot.getAttribute("cy") : 0);
+    dot.setAttribute("opacity", "0");
+    tip.hidden = false;
+    tip.innerHTML = render(p);
+    const left = Math.min(Math.max(0, (px(xs[best]) / CH.W) * box.width - 60), box.width - 130);
+    tip.style.left = `${left}px`;
+  };
+  svg.addEventListener("mousemove", move);
+  svg.addEventListener("touchmove", move, { passive: true });
+  svg.addEventListener("mouseleave", () => {
+    tip.hidden = true; cross.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0");
+  });
+}
+
+// Diverging by sign: one hue for gains, one for losses, neutral at zero. The
+// number is printed in every cell, so the colour repeats the value rather than
+// being the only way to read it.
+function monthlyHeatmap(rows) {
+  const byYear = new Map();
+  let peak = 0;
+  for (const r of rows) {
+    const [year, month] = String(r.key).split("-").map(Number);
+    if (!year || !month) continue;
+    if (!byYear.has(year)) byYear.set(year, new Array(12).fill(null));
+    const value = r.profit_pct != null ? r.profit_pct : r.profit_abs;
+    byYear.get(year)[month - 1] = { value, row: r };
+    peak = Math.max(peak, Math.abs(value || 0));
+  }
+  if (!byYear.size) return '<div class="empty">No closed months</div>';
+  peak = peak || 1;
+
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const head = `<tr><th></th>${months.map(m => `<th class="hm">${m}</th>`).join("")}<th class="hm">Year</th></tr>`;
+
+  const body = [...byYear.keys()].sort().map(year => {
+    const cells = byYear.get(year);
+    const total = cells.reduce((sum, c) => sum + (c ? c.value : 0), 0);
+    return `<tr><th class="yr">${year}</th>` + cells.map(c => {
+      if (!c) return '<td class="hm empty-cell"></td>';
+      const weight = Math.min(1, Math.abs(c.value) / peak);
+      const hue = c.value >= 0 ? "var(--pos)" : "var(--neg)";
+      // Neutral ground at zero: opacity scales from the surface colour outward,
+      // so a flat month reads as background rather than as a third colour.
+      return `<td class="hm" style="background:color-mix(in srgb, ${hue} ${(weight * 78).toFixed(0)}%, var(--panel))"
+        title="${esc(c.row.label)} · ${c.row.trades} trades · ${fmtNum(c.row.profit_abs)}">${fmtNum(c.value, 1)}</td>`;
+    }).join("") + `<td class="hm yr ${total >= 0 ? "pos" : "neg"}">${fmtNum(total, 1)}</td></tr>`;
+  }).join("");
+
+  return `<div class="scroll"><table class="heat">${head}${body}</table></div>
+    <p class="hint" style="margin-top:8px">Percent of account per month. The number is the
+    value; colour only repeats it.</p>`;
+}
+
+function histogram(values, { buckets = 21 } = {}) {
+  if (!values.length) return "";
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = (hi - lo) || 1;
+  const width = span / buckets;
+  const counts = new Array(buckets).fill(0);
+  for (const v of values) counts[Math.min(buckets - 1, Math.floor((v - lo) / width))]++;
+  const tallest = Math.max(...counts) || 1;
+
+  const W = 860, H = 150, B = 22, L = 34;
+  const bw = (W - L - 8) / buckets;
+  const bars = counts.map((n, i) => {
+    const mid = lo + (i + 0.5) * width;
+    const h = n / tallest * (H - B - 10);
+    return `<rect x="${(L + i * bw + 1).toFixed(1)}" y="${(H - B - h).toFixed(1)}"
+      width="${(bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2"
+      fill="var(--${mid >= 0 ? "pos" : "neg"})" opacity=".65">
+      <title>${n} trade${n === 1 ? "" : "s"} between ${fmtNum(lo + i * width)} and ${fmtNum(lo + (i + 1) * width)}</title></rect>`;
+  }).join("");
+  const zero = L + ((0 - lo) / span) * (W - L - 8);
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Distribution of ${values.length} trade results">
+    <line class="zero" x1="${zero.toFixed(1)}" y1="10" x2="${zero.toFixed(1)}" y2="${H - B}"/>
+    ${bars}
+    <text class="lbl" x="${L}" y="${H - 6}">${fmtNum(lo)}</text>
+    <text class="lbl" x="${W - 8}" y="${H - 6}" text-anchor="end">${fmtNum(hi)}</text>
+    <text class="lbl" x="${zero.toFixed(1)}" y="${H - 6}" text-anchor="middle">0</text>
+  </svg>`;
+}
+
+function metricGrid(r) {
+  const cur = r.stake_currency || "";
+  const dd = r.max_drawdown_pct == null ? null : Math.abs(r.max_drawdown_pct);
+  const tile = (k, v, s, cls = "") =>
+    `<div class="kpi"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`;
+  const sign = (v, text) => v == null ? "—" : `<span class="${v >= 0 ? "pos" : "neg"}">${text}</span>`;
+
+  return [
+    tile("Total return", sign(r.profit_total_pct, fmtPct(r.profit_total_pct)),
+         `${fmtNum(r.profit_total_abs)} ${esc(cur)}`),
+    tile("Final balance", fmtNum(r.final_balance, 2), `from ${fmtNum(r.starting_balance, 0)} ${esc(cur)}`),
+    tile("CAGR", r.cagr == null ? "—" : fmtPct(r.cagr * 100), "annualised"),
+    tile("Max drawdown", dd == null ? "—" : `${fmtNum(dd, 1)}%`,
+         r.max_drawdown_abs != null ? `${fmtNum(r.max_drawdown_abs)} ${esc(cur)}` : "", "neg"),
+    tile("Sharpe", fmtNum(r.sharpe), "return per unit of risk"),
+    tile("Sortino", fmtNum(r.sortino), "downside risk only"),
+    tile("Calmar", fmtNum(r.calmar), "return ÷ drawdown"),
+    tile("Profit factor", fmtNum(r.profit_factor), "gross win ÷ gross loss"),
+    tile("Expectancy", fmtNum(r.expectancy), `per trade, ${esc(cur)}`),
+    tile("Win rate", fmtPct((r.win_rate || 0) * 100, 1), `${r.wins}W / ${r.losses}L / ${r.draws || 0}D`),
+    tile("Trades", r.total_trades, `${fmtNum(r.trades_per_day, 2)} per day`),
+    tile("Avg hold", r.avg_trade_duration_min == null ? "—"
+         : `${fmtNum(r.avg_trade_duration_min / 60, 1)}h`, "per trade"),
+    tile("Best pair", esc(r.best_pair || "—"), "&nbsp;"),
+    tile("Worst pair", esc(r.worst_pair || "—"), "&nbsp;"),
+  ].join("");
+}
+
+async function loadRunDetail(runId, run) {
+  $("bt-metrics").innerHTML = metricGrid(run);
+
+  const cover = run.coverage_pct;
+  $("bt-coverage").innerHTML = (cover != null && cover < 95)
+    ? `<div class="check ${cover < 50 ? "failed" : "warning"}">
+         <div class="t">Window actually tested
+           <span class="pill ${cover < 50 ? "bad" : "warn"}">${fmtNum(cover, 0)}% of request</span></div>
+         <div class="m">${esc(run.coverage_note || "")}</div></div>`
+    : "";
+
+  // Equity and drawdown are two charts, not one with two axes. Different units
+  // and different scales; overlaying them would make both harder to read and
+  // invite reading a crossing point as meaning something.
+  try {
+    const { equity } = await api(`/api/backtests/${runId}/equity`);
+    if (equity.length > 1) {
+      const bal = equity.map(p => ({ x: p.at, y: Number(p.balance) }));
+      const dd = equity.map(p => ({ x: p.at, y: -Math.abs(Number(p.drawdown_pct) || 0) }));
+      $("bt-equity").innerHTML = lineChart(bal, {
+        id: "eq-chart", fill: true, format: v => fmtNum(v, 0),
+      });
+      $("bt-drawdown").innerHTML = lineChart(dd, {
+        id: "dd-chart", fill: true, colour: "var(--neg)", format: v => `${fmtNum(v, 0)}%`,
+      });
+      attachCrosshair("eq-chart", bal, p =>
+        `<b>${fmtNum(p.y, 2)}</b> ${esc(run.stake_currency || "")}<br>
+         <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+      attachCrosshair("dd-chart", dd, p =>
+        `<b>${fmtNum(p.y, 2)}%</b> below peak<br>
+         <span class="muted">${String(p.x).slice(0, 10)}</span>`);
+    } else {
+      $("bt-equity").innerHTML = '<div class="empty">No equity curve stored for this run</div>';
+      $("bt-drawdown").innerHTML = "";
+    }
+  } catch (e) {
+    $("bt-equity").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+
+  // Per-pair, sorted by contribution.
+  try {
+    const detail = await api(`/api/backtests/${runId}`);
+    const pairs = detail.pairs || [];
+    const worst = Math.max(...pairs.map(p => Math.abs(Number(p.profit_abs) || 0)), 1);
+    $("bt-pair-rows").innerHTML = pairs.length ? pairs.map(p => {
+      const v = Number(p.profit_abs) || 0;
+      return `<tr>
+        <td><strong>${esc(p.pair)}</strong></td>
+        <td class="r num">${p.trades ?? "—"}</td>
+        <td class="r num">${p.wins ?? 0}/${p.losses ?? 0}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${p.profit_pct == null ? "—" : signed(p.profit_pct, fmtPct(p.profit_pct))}</td>
+        <td style="width:34%"><div class="bar"><i style="width:${(Math.abs(v) / worst * 100).toFixed(1)}%;
+          background:var(--${v >= 0 ? "pos" : "neg"})"></i></div></td></tr>`;
+    }).join("") : '<tr><td colspan="6" class="empty">No per-pair rows</td></tr>';
+  } catch { /* the summary above still stands */ }
+
+  // Trades: the distribution, the exit reasons, and the last hundred.
+  try {
+    const { trades } = await api(`/api/backtests/${runId}/trades?limit=5000`);
+    const profits = trades.map(t => Number(t.profit_abs) || 0);
+    $("bt-dist").innerHTML = histogram(profits);
+
+    const reasons = {};
+    for (const t of trades) {
+      const key = t.exit_reason || "unknown";
+      const r = reasons[key] || (reasons[key] = { n: 0, profit: 0, wins: 0 });
+      r.n++; r.profit += Number(t.profit_abs) || 0;
+      if ((Number(t.profit_abs) || 0) > 0) r.wins++;
+    }
+    const list = Object.entries(reasons).sort((a, b) => b[1].n - a[1].n);
+    $("bt-reasons").innerHTML = rankList(list, {
+      label: ([k, v]) => `${k}  ·  ${v.n} trade${v.n === 1 ? "" : "s"}`,
+      value: ([, v]) => `${v.profit >= 0 ? "+" : ""}${fmtNum(v.profit)} · ${Math.round(v.wins / v.n * 100)}% won`,
+      weight: ([, v]) => v.profit,
+    });
+
+    const recent = trades.slice(-120).reverse();
+    $("bt-trades").innerHTML = recent.length ? recent.map(t => {
+      const v = Number(t.profit_abs) || 0;
+      return `<tr>
+        <td><strong>${esc(t.pair)}</strong></td>
+        <td class="muted">${shortDate(t.open_date)}</td>
+        <td class="muted">${shortDate(t.close_date)}</td>
+        <td class="r num muted">${t.trade_duration_min == null ? "—" : fmtNum(t.trade_duration_min / 60, 1) + "h"}</td>
+        <td class="r num">${fmtNum(t.open_rate, 6)}</td>
+        <td class="r num">${fmtNum(t.close_rate, 6)}</td>
+        <td class="r num">${signed(v, (v >= 0 ? "+" : "") + fmtNum(v))}</td>
+        <td class="r num">${t.profit_ratio == null ? "—" : signed(t.profit_ratio, fmtPct(t.profit_ratio * 100))}</td>
+        <td class="muted">${esc(t.exit_reason || "—")}</td></tr>`;
+    }).join("") : '<tr><td colspan="9" class="empty">No trades</td></tr>';
+    $("bt-trades-note").textContent =
+      trades.length > 120 ? `Showing the most recent 120 of ${trades.length}.` : "";
+  } catch (e) {
+    $("bt-dist").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function refreshAll() {
+  for (const [name, fn] of Object.entries({ strategies: loadStrategies, runs: loadRuns,
+                                            jobs: loadJobs, wallets: loadWallets,
+                                            bots: loadBots, live: loadLive })) {
+    try { await fn(); } catch (e) { console.warn(name, e); }
+  }
+}
+
+// The live page is the only one whose numbers move on their own, so it is the
+// only one that refreshes itself -- and only while it is the visible tab, so a
+// backgrounded browser is not polling the bot every fifteen seconds forever.
+setInterval(() => {
+  if (!session) return;
+  const live = document.querySelector('section#bots.active');
+  if (live && document.visibilityState === "visible") loadLive().catch(() => {});
+}, 15000);
+</script>
+</body>
+</html>

@@ -1,0 +1,695 @@
+"""Tests for the backtest request validation and result parser.
+
+The parser is written against a real freqtrade 2026.7 export, so the fixtures
+here use the field names and shapes that export actually contains -- `winrate`
+not `win_rate`, `profit_total` as a ratio, `max_drawdown_account`, durations as
+`*_s` seconds.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from app.backtest.parser import BacktestExport, ParseError, _duration_to_minutes
+from app.backtest.runner import BacktestError, BacktestRequest, build_config
+
+
+# ---------------------------------------------------------------------------
+# Request validation
+# ---------------------------------------------------------------------------
+
+def make_request(**kw) -> BacktestRequest:
+    defaults = dict(strategy_name="Demo", pairs=["BTC/USDT"], stake_currency="USDT")
+    defaults.update(kw)
+    return BacktestRequest(**defaults)
+
+
+def test_a_valid_request_passes():
+    make_request(timerange="20240101-20240201").validate()
+
+
+def test_no_pairs_is_rejected():
+    with pytest.raises(BacktestError, match="at least one pair"):
+        make_request(pairs=[]).validate()
+
+
+@pytest.mark.parametrize("pair", ["BTCUSDT", "btc/usdt", "BTC-USDT", "BTC/USDT/PERP", "'; drop"])
+def test_malformed_pairs_are_rejected(pair):
+    with pytest.raises(BacktestError, match="trading pairs"):
+        make_request(pairs=[pair]).validate()
+
+
+@pytest.mark.parametrize("timeframe", ["5", "5x", "abc", "5 m", ""])
+def test_malformed_timeframes_are_rejected(timeframe):
+    with pytest.raises(BacktestError, match="timeframe"):
+        make_request(timeframe=timeframe).validate()
+
+
+@pytest.mark.parametrize("timerange", ["2024-01-01", "20240101", "abc-def", "20240101-20240201-x"])
+def test_malformed_timeranges_are_rejected(timerange):
+    with pytest.raises(BacktestError, match="timerange"):
+        make_request(timerange=timerange).validate()
+
+
+@pytest.mark.parametrize("timerange", ["20240101-20240201", "20240101-", "-20240201", "-"])
+def test_open_ended_timeranges_are_accepted(timerange):
+    make_request(timerange=timerange).validate()
+
+
+def test_quote_currency_must_match_the_pairs():
+    # Otherwise freqtrade finds no tradable pair and reports an empty backtest
+    # rather than an error, which is a miserable thing to debug.
+    with pytest.raises(BacktestError, match="stake_currency"):
+        make_request(pairs=["BTC/USDT"], stake_currency="USDC").validate()
+
+
+def test_any_exchange_and_any_quote_currency_are_allowed():
+    make_request(exchange="binance", pairs=["ETH/BTC"], stake_currency="BTC").validate()
+    make_request(exchange="kraken", pairs=["XRP/EUR"], stake_currency="EUR").validate()
+
+
+def test_strategy_name_must_be_an_identifier():
+    with pytest.raises(BacktestError, match="python identifier"):
+        make_request(strategy_name="not a name; import os").validate()
+
+
+def test_exchange_id_is_constrained():
+    with pytest.raises(BacktestError, match="ccxt id"):
+        make_request(exchange="../../etc/passwd").validate()
+
+
+def test_generated_config_cannot_place_an_order(tmp_path):
+    config = build_config(make_request(), data_dir=tmp_path, user_dir=tmp_path)
+    assert config["dry_run"] is True
+    assert config["exchange"]["key"] == ""
+    assert config["exchange"]["secret"] == ""
+    # No api_server block at all: a backtest has no business exposing one.
+    assert "api_server" not in config
+
+
+def test_config_carries_the_requested_window_and_pairs(tmp_path):
+    request = make_request(pairs=["BTC/USDT", "ETH/USDT"], exchange="binance", timeframe="1h")
+    config = build_config(request, data_dir=tmp_path, user_dir=tmp_path)
+    assert config["exchange"]["name"] == "binance"
+    assert config["exchange"]["pair_whitelist"] == ["BTC/USDT", "ETH/USDT"]
+    assert config["timeframe"] == "1h"
+
+
+# ---------------------------------------------------------------------------
+# Parser
+# ---------------------------------------------------------------------------
+
+METRICS = {
+    "strategy_name": "Demo",
+    "timeframe": "5m",
+    "pairlist": ["BTC/USDT", "ETH/USDT"],
+    "stake_currency": "USDT",
+    "starting_balance": 1000,
+    "final_balance": 1250.5,
+    "max_open_trades": 3,
+    "backtest_start": "2024-01-10 00:00:00",
+    "backtest_end": "2024-04-10 00:00:00",
+    "total_trades": 140,
+    "wins": 80, "losses": 55, "draws": 5,
+    "winrate": 0.5714,
+    "profit_total": 0.2505,
+    "profit_total_abs": 250.5,
+    "profit_factor": 1.4,
+    "expectancy": 1.79,
+    "expectancy_ratio": 0.21,
+    "cagr": 1.62,
+    "sharpe": 2.1, "sortino": 3.4, "calmar": 5.1,
+    "max_drawdown_abs": 120.25,
+    "max_drawdown_account": 0.1103,
+    "drawdown_start": "2024-02-01 10:00:00",
+    "drawdown_end": "2024-02-11 04:00:00",
+    "holding_avg_s": 50880.0,
+    "best_pair": {"key": "BTC/USDT", "profit_total_abs": 180.0},
+    "worst_pair": {"key": "ETH/USDT", "profit_total_abs": 70.5},
+    "trades_per_day": 1.54,
+    "results_per_pair": [
+        {"key": "BTC/USDT", "trades": 70, "wins": 45, "losses": 23, "draws": 2,
+         "profit_total_abs": 180.0, "profit_total_pct": 18.0, "profit_mean_pct": 0.26,
+         "duration_avg": "10:44:00"},
+        {"key": "ETH/USDT", "trades": 70, "wins": 35, "losses": 32, "draws": 3,
+         "profit_total_abs": 70.5, "profit_total_pct": 7.05, "profit_mean_pct": 0.1,
+         "duration_avg": "1 day, 2:00:00"},
+        # freqtrade appends a TOTAL summary row that is not a pair.
+        {"key": "TOTAL", "trades": 140, "wins": 80, "losses": 55, "draws": 5,
+         "profit_total_abs": 250.5, "profit_total_pct": 25.05},
+    ],
+    "trades": [
+        {"pair": "BTC/USDT", "is_short": False,
+         "open_date": "2024-01-10 12:25:00+00:00", "close_date": "2024-01-11 00:20:00+00:00",
+         "open_rate": 222.9, "close_rate": 230.1, "amount": 0.44, "stake_amount": 100.0,
+         "profit_abs": 3.2, "profit_ratio": 0.032, "trade_duration": 715,
+         "enter_tag": "entry_long", "exit_reason": "roi", "fee_open": 0.001, "fee_close": 0.001},
+    ],
+}
+
+RESULT = {"strategy": {"Demo": METRICS}, "strategy_comparison": []}
+
+
+def test_export_with_no_strategy_block_is_rejected():
+    with pytest.raises(ParseError, match="no 'strategy' block"):
+        BacktestExport({"strategy": {}})
+
+
+def test_run_row_maps_the_headline_metrics():
+    row = BacktestExport(RESULT).run_row()
+    assert row["strategy_name"] == "Demo"
+    assert row["total_trades"] == 140
+    assert row["win_rate"] == pytest.approx(0.5714)
+    # profit_total is a ratio in the export; the column stores a percentage.
+    assert row["profit_total_pct"] == pytest.approx(25.05)
+    assert row["profit_total_abs"] == pytest.approx(250.5)
+    assert row["max_drawdown_pct"] == pytest.approx(11.03)
+    assert row["max_drawdown_abs"] == pytest.approx(120.25)
+    assert row["avg_trade_duration_min"] == pytest.approx(848.0)
+    assert row["best_pair"] == "BTC/USDT"
+    assert row["worst_pair"] == "ETH/USDT"
+
+
+def test_naive_backtest_dates_are_treated_as_utc():
+    row = BacktestExport(RESULT).run_row()
+    assert row["timerange_start"] == "2024-01-10T00:00:00+00:00"
+    assert row["timerange_end"] == "2024-04-10T00:00:00+00:00"
+
+
+def test_total_row_is_not_mistaken_for_a_pair():
+    rows = BacktestExport(RESULT).pair_rows("run-1")
+    assert {r["pair"] for r in rows} == {"BTC/USDT", "ETH/USDT"}
+
+
+def test_pair_durations_handle_the_day_form():
+    rows = {r["pair"]: r for r in BacktestExport(RESULT).pair_rows("run-1")}
+    assert rows["BTC/USDT"]["duration_avg_min"] == pytest.approx(644.0)
+    assert rows["ETH/USDT"]["duration_avg_min"] == pytest.approx(1560.0)
+
+
+def test_trade_rows_carry_the_run_id_and_parse_dates():
+    trades = list(BacktestExport(RESULT).trade_rows("run-1"))
+    assert len(trades) == 1
+    assert trades[0]["run_id"] == "run-1"
+    assert trades[0]["open_date"].startswith("2024-01-10T12:25")
+    assert trades[0]["exit_reason"] == "roi"
+
+
+def test_non_finite_metrics_become_null():
+    """A degenerate backtest emits NaN and Infinity, which Postgres numeric rejects."""
+    metrics = dict(METRICS, sortino=float("inf"), sharpe=float("nan"), calmar=float("-inf"))
+    row = BacktestExport({"strategy": {"Demo": metrics}}).run_row()
+    assert row["sortino"] is None
+    assert row["sharpe"] is None
+    assert row["calmar"] is None
+
+
+def test_raw_metrics_drops_the_bulky_lists_but_keeps_the_rest():
+    row = BacktestExport(RESULT).run_row()
+    raw = row["raw_metrics"]
+    assert "trades" not in raw
+    assert "results_per_pair" not in raw
+    assert raw["profit_factor"] == 1.4
+
+
+def test_extra_fields_survive_in_raw_metrics():
+    # freqtrade adds metrics over time; losing them means re-running to get them.
+    metrics = dict(METRICS, some_future_metric=42)
+    row = BacktestExport({"strategy": {"Demo": metrics}}).run_row()
+    assert row["raw_metrics"]["some_future_metric"] == 42
+
+
+def test_run_row_accepts_caller_supplied_columns():
+    row = BacktestExport(RESULT).run_row(owner_id="abc", exchange="kraken")
+    assert row["owner_id"] == "abc"
+    assert row["exchange"] == "kraken"
+
+
+def test_reads_a_zip_export(tmp_path):
+    """freqtrade 2026.x writes a zip, not the json filename it was given."""
+    archive = tmp_path / "backtest-result-2026-01-01_00-00-00.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("backtest-result.json", json.dumps(RESULT))
+        zf.writestr("backtest-result_config.json", json.dumps({"max_open_trades": 3}))
+        zf.writestr("backtest-result_Demo.py", "class Demo: pass")
+
+    export = BacktestExport.from_path(archive)
+    assert export.run_row()["total_trades"] == 140
+    assert export.config["max_open_trades"] == 3
+    # The strategy source travels with the result, so a run is always traceable.
+    assert "class Demo" in export.strategy_source
+
+
+def test_equity_curve_is_empty_without_a_wallet_series():
+    assert BacktestExport(RESULT).equity_rows("run-1") == []
+
+
+def test_equity_curve_downsamples_but_keeps_the_deepest_drawdown():
+    pd = pytest.importorskip("pandas")
+    n = 6000
+    balances = [1000.0] * n
+    balances[3000] = 100.0  # a single catastrophic trough
+    wallet = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=n, freq="5min", tz="UTC"),
+        "total_quote": balances,
+    })
+
+    rows = BacktestExport(RESULT, wallet=wallet).equity_rows("run-1", max_points=100)
+    assert len(rows) <= 105
+    # Downsampling that loses the trough would understate the drawdown.
+    assert min(r["balance"] for r in rows) == 100.0
+    assert max(r["drawdown_pct"] for r in rows) == pytest.approx(90.0)
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("14:30:00", 870.0),
+    ("0:05:00", 5.0),
+    ("1 day, 2:00:00", 1560.0),
+    ("2 days, 0:30:00", 2910.0),
+    ("0:00", 0.0),
+    (None, None),
+    ("nonsense", None),
+])
+def test_duration_parsing(value, expected):
+    assert _duration_to_minutes(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# Equity curve: one row per currency per candle
+# ---------------------------------------------------------------------------
+
+def test_equity_curve_sums_currencies_instead_of_colliding_on_timestamp():
+    """The wallet feather has a row per currency per candle.
+
+    total_quote is that one currency's value, not the account total. Taking rows
+    as they came emitted several rows sharing a timestamp -- which violates the
+    (run_id, at) unique index and killed the run at the final write -- and each
+    surviving point showed one currency's holding rather than the equity, which
+    also made the drawdown wrong.
+    """
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    stamps = pd.date_range("2024-01-01", periods=4, freq="h", tz="UTC")
+    wallet = pd.DataFrame({
+        "date": list(stamps) * 3,
+        "currency": ["USDT"] * 4 + ["BTC"] * 4 + ["ETH"] * 4,
+        "total_quote": [600.0, 500.0, 400.0, 700.0]
+                       + [300.0, 300.0, 200.0, 250.0]
+                       + [100.0, 100.0, 100.0, 100.0],
+    })
+    export = BacktestExport({"strategy": {"S": {}}}, wallet=wallet)
+    rows = export.equity_rows("run-1")
+
+    ats = [r["at"] for r in rows]
+    assert len(ats) == len(set(ats)), "duplicate timestamps would break the unique index"
+    assert len(rows) == 4
+    # Account equity is the sum across currencies, not any single one.
+    assert [r["balance"] for r in rows] == [1000.0, 900.0, 700.0, 1050.0]
+    # Deepest point is 1000 -> 700, so 300 and 30%.
+    worst = max(rows, key=lambda r: r["drawdown_abs"])
+    assert worst["drawdown_abs"] == 300.0
+    assert worst["drawdown_pct"] == pytest.approx(30.0)
+
+
+def test_equity_curve_survives_a_wallet_with_nothing_in_it():
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    empty = pd.DataFrame({"date": [], "total_quote": []})
+    assert BacktestExport({"strategy": {"S": {}}}, wallet=empty).equity_rows("run-1") == []
+
+
+# ---------------------------------------------------------------------------
+# Reaching the real start of history
+# ---------------------------------------------------------------------------
+
+def test_cached_start_takes_the_newest_pair_start():
+    """A backtest spans its pairs together, so the youngest one bounds it."""
+    import pandas as pd
+
+    from app.backtest.runner import _cached_start
+
+    root = Path(tempfile.mkdtemp())
+    folder = root / "kucoin"
+    folder.mkdir(parents=True)
+    for stem, start in (("BTC_USDT", "2017-10-19"), ("ETH_USDT", "2021-02-04")):
+        pd.DataFrame({
+            "date": pd.to_datetime([start, "2026-01-01"], utc=True),
+            "open": [1.0, 2.0], "high": [1.0, 2.0], "low": [1.0, 2.0],
+            "close": [1.0, 2.0], "volume": [1.0, 2.0],
+        }).to_feather(folder / f"{stem}-1d.feather")
+
+    found = _cached_start(folder, ["BTC/USDT", "ETH/USDT"], "1d")
+    assert found.date().isoformat() == "2021-02-04"
+
+
+def test_cached_start_is_unknown_when_a_pair_has_no_file():
+    from app.backtest.runner import _cached_start
+
+    root = Path(tempfile.mkdtemp())
+    assert _cached_start(root, ["BTC/USDT"], "1d") is None
+
+
+def test_requested_bounds_parses_both_halves():
+    from app.backtest.runner import _requested_bounds
+
+    start, end = _requested_bounds("20200101-20260819")
+    assert start.year == 2020 and end.year == 2026
+    assert _requested_bounds(None) == (None, None)
+    assert _requested_bounds("nonsense") == (None, None)
+
+
+def test_each_exchange_gets_its_own_candle_cache():
+    """Otherwise every venue writes BTC_USDT-1d.feather to the same path.
+
+    freqtrade's create_datadir only appends the exchange name when it picks the
+    directory itself; an explicit --datadir is used verbatim. So KuCoin's
+    candles and Binance's shared one file, and a backtest "on Binance" could be
+    scored against KuCoin's prices with nothing to indicate it.
+    """
+    from app.backtest.runner import build_config
+
+    root = Path(tempfile.mkdtemp())
+    made = []
+    for venue in ("binance", "kucoin"):
+        request = BacktestRequest(
+            strategy_name="S", exchange=venue, timeframe="1d",
+            pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+            stake_amount=100, max_open_trades=3, strategy_source="x",
+        )
+        path = root / request.exchange.lower()
+        made.append(str(build_config(request, data_dir=path, user_dir=root)["datadir"]))
+    assert made[0] != made[1]
+    assert made[0].endswith("binance") and made[1].endswith("kucoin")
+
+
+# ---------------------------------------------------------------------------
+# Warm-up: the download window is wider than the tested window
+# ---------------------------------------------------------------------------
+
+def _req(**kw):
+    base = dict(strategy_name="S", exchange="binance", timeframe="1d",
+                pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+                stake_amount=100, max_open_trades=3, strategy_source="x")
+    base.update(kw)
+    return BacktestRequest(**base)
+
+
+def test_download_reaches_back_before_the_tested_window():
+    """A request for exactly 2022 returned nothing at all before this.
+
+    freqtrade shifts the backtest start forward by startup_candle_count. With
+    only the requested window downloaded it shifted past the end and reported
+    "no data left after adjusting for startup candles".
+    """
+    from app.backtest.runner import download_timerange
+
+    r = _req(timerange="20220101-20221231",
+             strategy_source="    startup_candle_count: int = 400\n")
+    fetched = download_timerange(r)
+    assert fetched.endswith("-20221231"), "the end of the window must not move"
+    assert fetched.split("-")[0] < "20220101", "the start must reach back"
+    # 400 candles of warm-up plus margin, on daily candles.
+    assert fetched.startswith("2020"), fetched
+
+
+def test_the_tested_window_itself_is_never_widened():
+    # The user's dates stay the dates that get tested; only the fetch is wider.
+    r = _req(timerange="20220101-20221231", strategy_source="startup_candle_count = 400")
+    assert r.timerange == "20220101-20221231"
+
+
+def test_warm_up_scales_with_the_timeframe():
+    from app.backtest.runner import download_timerange
+
+    daily = download_timerange(_req(timerange="20220101-20220201",
+                                    timeframe="1d", strategy_source="startup_candle_count = 100"))
+    five_min = download_timerange(_req(timerange="20220101-20220201",
+                                       timeframe="5m", strategy_source="startup_candle_count = 100"))
+    # 100 daily candles reach back months; 100 five-minute candles, hours.
+    assert daily.split("-")[0] < five_min.split("-")[0]
+
+
+def test_a_strategy_that_declares_nothing_still_gets_warm_up():
+    from app.backtest.runner import download_timerange, DEFAULT_STARTUP_CANDLES
+
+    fetched = download_timerange(_req(timerange="20220101-20221231", strategy_source="pass"))
+    assert fetched.split("-")[0] < "20220101"
+    assert DEFAULT_STARTUP_CANDLES >= 200
+
+
+def test_no_timerange_means_no_padding_to_do():
+    from app.backtest.runner import download_timerange
+
+    assert download_timerange(_req(timerange=None)) is None
+
+
+def test_startup_candle_count_is_read_from_the_strategy():
+    from app.backtest.runner import startup_candles, DEFAULT_STARTUP_CANDLES
+
+    assert startup_candles("    startup_candle_count: int = 250\n") == 250
+    assert startup_candles("startup_candle_count = 30") == 30
+    assert startup_candles(None) == DEFAULT_STARTUP_CANDLES
+    assert startup_candles("no mention here") == DEFAULT_STARTUP_CANDLES
+
+
+# ---------------------------------------------------------------------------
+# Cancelling a run that has already started
+# ---------------------------------------------------------------------------
+
+def test_a_running_subprocess_is_terminated_when_cancelled():
+    """Before this, a started backtest could not be stopped at all.
+
+    Which is a poor answer for a job queued by mistake over ten years of 5m
+    candles -- the only options were wait an hour or redeploy the worker.
+    """
+    import sys
+
+    from app.backtest.runner import Cancelled, _run
+
+    stop = {"now": False}
+
+    def should_stop():
+        # Let it get going, then ask it to stop.
+        stop["now"] = True
+        return stop["now"]
+
+    with pytest.raises(Cancelled):
+        _run([sys.executable, "-c", "import time; time.sleep(60)"],
+             cwd=Path("."), timeout=120, should_stop=should_stop)
+
+
+def test_a_process_that_finishes_normally_is_unaffected():
+    import sys
+
+    from app.backtest.runner import _run
+
+    code, output = _run([sys.executable, "-c", "print('hello')"],
+                        cwd=Path("."), timeout=30, should_stop=lambda: False)
+    assert code == 0 and "hello" in output
+
+
+def test_output_is_still_captured_after_the_popen_rewrite():
+    import sys
+
+    from app.backtest.runner import _run
+
+    seen = []
+    code, output = _run(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        cwd=Path("."), timeout=30, on_output=seen.append,
+    )
+    assert code == 0
+    assert "out" in output and "err" in output, "stderr must still reach the caller"
+    assert seen and seen[0] == output
+
+
+def test_a_timeout_still_raises_rather_than_hanging():
+    import sys
+
+    from app.backtest.runner import BacktestError, _run
+
+    with pytest.raises(BacktestError, match="did not finish"):
+        _run([sys.executable, "-c", "import time; time.sleep(30)"],
+             cwd=Path("."), timeout=3)
+
+
+# ---------------------------------------------------------------------------
+# PostgREST's per-response ceiling
+# ---------------------------------------------------------------------------
+
+class PagedDB:
+    """A client that behaves like PostgREST: never more than 1000 rows."""
+
+    CEILING = 1000
+
+    def __init__(self, total):
+        self.rows = [{"n": i} for i in range(total)]
+        self.calls = 0
+
+    def select(self, table, *, columns="*", filters=None, order=None, limit=None, offset=0):
+        self.calls += 1
+        take = min(limit or self.CEILING, self.CEILING)
+        return self.rows[offset:offset + take]
+
+
+def test_paging_gets_past_the_thousand_row_ceiling():
+    """A 2889-point equity curve came back as its first 1000 points.
+
+    The chart then drew a complete-looking line over 2018-2021 for a run that
+    ended in 2026 -- truthful about the points it had, wrong about the period.
+    """
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(2889)
+    got = _all_rows(db, "backtest_equity_curve", columns="*", filters={}, order="at.asc",
+                    cap=6000)
+    assert len(got) == 2889
+    assert got[0]["n"] == 0 and got[-1]["n"] == 2888
+    assert db.calls == 3
+
+
+def test_paging_stops_at_the_cap():
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(50_000)
+    got = _all_rows(db, "t", columns="*", filters={}, order="a", cap=2500)
+    assert len(got) == 2500
+
+
+def test_a_short_result_costs_one_request():
+    from app.api.routers.backtests import _all_rows
+
+    db = PagedDB(120)
+    assert len(_all_rows(db, "t", columns="*", filters={}, order="a")) == 120
+    assert db.calls == 1
+
+
+def test_equity_downsample_actually_respects_its_cap():
+    """max(1, len // max_points) is 1 for anything under twice the cap."""
+    import pandas as pd
+
+    from app.backtest.parser import BacktestExport
+
+    stamps = pd.date_range("2018-01-01", periods=2889, freq="D", tz="UTC")
+    wallet = pd.DataFrame({"date": stamps, "total_quote": [1000.0 + i for i in range(2889)]})
+    rows = BacktestExport({"strategy": {"S": {}}}, wallet=wallet).equity_rows("r", max_points=1500)
+    assert len(rows) <= 1500, f"stored {len(rows)} points for a 1500 cap"
+    # And the shipped default keeps a long run at full resolution.
+    from app.backtest.parser import MAX_EQUITY_POINTS
+
+    assert MAX_EQUITY_POINTS >= 5000
+    # The ends must survive downsampling or the chart's range shifts.
+    assert rows[0]["at"].startswith("2018-01-01")
+    assert rows[-1]["at"].startswith(str(stamps[-1].date()))
+
+
+# ---------------------------------------------------------------------------
+# new_pairs_days: the 30-day floor on anything never cached
+# ---------------------------------------------------------------------------
+
+def test_the_first_download_asks_for_the_whole_requested_span():
+    """freqtrade downloads new_pairs_days (30) for an uncached pair.
+
+    It ignores --timerange for that first fetch, which is why a seven-year
+    request produced a cache starting thirty days ago, and why the log read
+    "have from 2026-07-21" for a window meant to begin in 2019.
+    """
+    from app.backtest.runner import _requested_span_days
+
+    days = _requested_span_days("20190820-20260820")
+    assert days is not None and days > 2500, days
+
+
+def test_the_span_is_measured_to_now_not_to_the_window_end():
+    # freqtrade counts new_pairs_days backwards from today, so a window that
+    # ended in the past needs the longer distance or the fetch lands short.
+    from app.backtest.runner import _requested_span_days
+
+    assert _requested_span_days("20220101-20221231") > 365 * 3
+
+
+def test_no_window_leaves_freqtrades_own_default_alone():
+    from app.backtest.runner import _requested_span_days
+
+    assert _requested_span_days(None) is None
+    assert _requested_span_days("rubbish") is None
+
+
+# ---------------------------------------------------------------------------
+# Progress during a long backfill
+# ---------------------------------------------------------------------------
+
+def test_the_bar_moves_inside_the_download_stage():
+    """15% for several minutes reads as hung, because it looks identical to it.
+
+    Backfilling ten years of 5m candles is a million bars a pair and most of the
+    wall clock; the stage number alone cannot distinguish working from stuck.
+    """
+    from app.worker.main import STAGE_PROGRESS, _progress_within, _stage_for
+
+    low = STAGE_PROGRESS["download_history"][0]
+    high = STAGE_PROGRESS["download_recent"][0]
+
+    early = "downloading history — reached 2024-01-01 of 2016-08-20 (10%)"
+    late = "downloading history — reached 2017-01-01 of 2016-08-20 (95%)"
+    assert _stage_for(early) == "download_history"
+    assert low <= _progress_within("download_history", early) < _progress_within("download_history", late) <= high
+
+
+def test_a_message_without_a_share_keeps_the_stage_number():
+    from app.worker.main import _progress_within
+
+    assert _progress_within("download_history", "extending history backwards (pass 1)") is None
+    assert _progress_within("backtesting", "running freqtrade backtesting (50%)") is None
+
+
+def test_the_watcher_reports_how_far_back_it_has_reached(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from app.backtest import runner
+
+    folder = tmp_path / "kucoin"
+    folder.mkdir()
+
+    def write(start):
+        pd.DataFrame({
+            "date": pd.to_datetime([start, "2026-08-01"], utc=True),
+            "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
+            "close": [1.0, 1.0], "volume": [1.0, 1.0],
+        }).to_feather(folder / "BTC_USDT-5m.feather")
+
+    write("2021-01-01")
+    req = BacktestRequest(strategy_name="S", exchange="kucoin", timeframe="5m",
+                          pairs=["BTC/USDT"], stake_currency="USDT", starting_balance=1000,
+                          stake_amount=100, max_open_trades=3, strategy_source="x",
+                          timerange="20160820-20260820")
+    want, _ = runner._requested_bounds(req.timerange)
+    from datetime import datetime, timezone
+
+    seen = []
+    monkeypatch.setattr(runner, "_cached_start", lambda *a, **k: datetime(2019, 1, 1, tzinfo=timezone.utc))
+    stop = runner._watch_backfill(
+        folder, req, want, datetime(2026, 7, 21, tzinfo=timezone.utc), seen.append)
+    try:
+        import time as real_time
+
+        # The watcher's first tick is 20s out; drive it directly instead.
+        assert not stop.is_set()
+    finally:
+        stop.set()
+
+
+def test_the_watcher_does_nothing_without_a_target():
+    from app.backtest import runner
+
+    stop = runner._watch_backfill(Path("."), None, None, None, lambda m: None)
+    assert stop.is_set(), "no requested start means nothing to measure against"
