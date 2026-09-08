@@ -367,8 +367,14 @@ def test_the_startup_serves_before_it_takes_the_lock():
     assert body.index('local("ping")') < body.index("acquire_trading_lock"), (
         "it must wait for the port to answer before waiting on the lock"
     )
-    assert body.index("acquire_trading_lock") < body.index('local(\'start\', \'POST\')'), (
-        "it must hold the lock before it starts trading"
+    # The trader is started from _ensure_trading now, so assert the ordering
+    # that matters -- lock first, start second -- rather than a literal call.
+    assert body.index("acquire_trading_lock") < body.index("_ensure_trading"), (
+        "the lock must be held before the trader is started"
+    )
+    starter = source[source.index("def _ensure_trading"):launch]
+    assert "start" in starter and "POST" in starter, (
+        "_ensure_trading is what starts the trader; if that moved, this test is stale"
     )
 
 

@@ -255,6 +255,15 @@ STANDDOWN_EXIT_AFTER = 900
 #: replacement for this process, which cannot exist yet.
 STARTUP_TAKEOVER_GRACE = 120
 
+#: How long to wait before trying the trading lock again. The database being
+#: briefly unreachable must cost a minute, not the life of the process.
+LOCK_RETRY_SECONDS = 60
+
+#: How often to confirm the trader is actually trading. Cheap -- one loopback
+#: call -- against the failure it catches, which is the bot sitting up and
+#: healthy while managing no stop-loss on real positions.
+SUPERVISE_SECONDS = 120
+
 
 def _lock_keys(name):
     """Two keys per bot: the trading lock, and a flag meaning someone wants it."""
@@ -1081,25 +1090,73 @@ def _take_lock_then_trade():
         print("freqtrade never answered locally; not taking the trading lock", flush=True)
         return
 
-    if not acquire_trading_lock(db_url, bot_name, wait_seconds=1800):
-        print("TRADING LOCK NOT ACQUIRED: staying stopped rather than running a second "
-              "trading process against one database.", flush=True)
+    # Taking the lock needs its own database connection, so it fails when the
+    # database is unreachable -- and this ran once, in a daemon thread, with no
+    # handler. On 2026-09-08 Supabase's pooler answered ECHECKOUTTIMEOUT, the
+    # exception killed this thread without a line in the log, and the bot sat in
+    # its boot state -- STOPPED, alive, heartbeating, holding two positions and
+    # managing neither -- for seven hours. Retried until it works.
+    while not _stood_down.is_set():
+        try:
+            if acquire_trading_lock(db_url, bot_name, wait_seconds=300):
+                break
+            print("TRADING LOCK NOT ACQUIRED: staying stopped rather than running a "
+                  "second trading process against one database. Retrying.", flush=True)
+        except Exception as exc:  # noqa: BLE001 - the retry is the whole point
+            print(f"could not take the trading lock ({exc}); retrying in "
+                  f"{LOCK_RETRY_SECONDS}s", flush=True)
+        time.sleep(LOCK_RETRY_SECONDS)
+    else:
         return
 
-    # Only now is trading safe. Honour whatever state was actually asked for.
-    wanted = _desired_state()
-    if wanted == "running":
-        try:
-            print(f"lock held; starting the trader ({local('start', 'POST').get('status')})",
-                  flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"could not start the trader: {exc}", flush=True)
-    else:
-        print(f"lock held; staying {wanted} as asked", flush=True)
+    _ensure_trading(local, first=True)
 
     # Still watched, as a fallback: if the platform ever leaves two instances
     # up, the older one gives way rather than both sitting on one database.
     watch_for_takeover(bot_name, lambda reason: stand_down(reason, local))
+
+    # And keep watching this one. Everything above happens once at boot, which
+    # is exactly when the infrastructure is least settled; a bot that is up and
+    # not trading is the state this whole system exists to prevent, so it is
+    # also the one worth rechecking rather than assuming.
+    while not _stood_down.is_set():
+        time.sleep(SUPERVISE_SECONDS)
+        _ensure_trading(local)
+
+
+def _ensure_trading(local, first=False):
+    """Start the trader if it should be running and is not.
+
+    Deliberately reads the desired state every time rather than trusting what
+    was wanted at boot: pressing Stop must not be undone a minute later by a
+    supervisor that only remembers what it was told once.
+    """
+    try:
+        wanted = _desired_state()
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not read desired state ({exc}); leaving the trader alone",
+              flush=True)
+        return
+
+    if wanted != "running":
+        if first:
+            print(f"lock held; staying {wanted} as asked", flush=True)
+        return
+
+    try:
+        state = str((local("show_config") or {}).get("state") or "").lower()
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not read the trader's state ({exc})", flush=True)
+        return
+
+    if state == "running":
+        return
+
+    try:
+        result = local("start", "POST").get("status")
+        print(f"trader was {state or 'not running'}; started it ({result})", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not start the trader: {exc}", flush=True)
 
 
 if db_url:
