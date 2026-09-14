@@ -76,7 +76,7 @@ class ConservativeRSI(IStrategy):
         dataframe['volume_ma'] = dataframe['volume'].rolling(window=20).mean()
 
         # Bollinger Bands for additional context
-        bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2, nbdevdn=2)
+        bollinger = ta.BBANDS(dataframe, timeperiod=20, nbdevup=2.0, nbdevdn=2.0)
         dataframe['bb_lowerband'] = bollinger['lowerband']
         dataframe['bb_middleband'] = bollinger['middleband']
         dataframe['bb_upperband'] = bollinger['upperband']
