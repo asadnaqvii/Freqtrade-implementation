@@ -1735,6 +1735,7 @@ const INCIDENT_LOOK = {
   offline:     ["bad",  "No heartbeat — the process was gone."],
   stale:       ["warn", "Heartbeats stopped briefly. Usually a redeploy."],
   not_trading: ["bad",  "Up and answering, but not trading — no stop-loss was being managed."],
+  stopped_with_positions: ["warn", "Stopped on purpose — but positions are open and nothing is managing their stop-loss. Press Start when you are ready."],
 };
 
 const forDuration = (s) => s == null ? "—"
@@ -1751,7 +1752,10 @@ async function loadIncidents() {
     const banner = $("incident-banner");
     if (open.length) {
       banner.hidden = false;
-      banner.innerHTML = `<h2 class="neg">Bot is not trading</h2>` + open.map(i => {
+      const onPurpose = open.every(i => i.kind === "stopped_with_positions");
+      banner.innerHTML = (onPurpose
+        ? `<h2 class="warn">Stopped on purpose — positions unmanaged</h2>`
+        : `<h2 class="neg">Bot is not trading</h2>`) + open.map(i => {
         const [, meaning] = INCIDENT_LOOK[i.kind] || ["", i.kind];
         return `<p class="hint" style="margin:0 0 6px">
           <strong>${esc(i.kind.replaceAll("_", " "))}</strong> since ${shortDate(i.opened_at)}

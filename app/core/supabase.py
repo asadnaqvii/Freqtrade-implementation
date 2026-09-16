@@ -50,7 +50,8 @@ class SupabaseClient:
     needs and keeps the query construction explicit at the call site.
     """
 
-    def __init__(self, token: str, *, is_service_role: bool = False) -> None:
+    def __init__(self, token: str, *, is_service_role: bool = False,
+                 timeout: float | None = None) -> None:
         settings = get_settings()
         if not settings.supabase.url:
             raise ConfigError("SUPABASE_URL is not set")
@@ -58,12 +59,16 @@ class SupabaseClient:
         self._apikey = settings.supabase.anon_key or token
         self._token = token
         self.is_service_role = is_service_role
+        # A caller on a path that must not wait -- the bot's boot -- can cap
+        # every request this client makes. Default is the module's generous one.
+        self._timeout = httpx.Timeout(timeout, connect=min(timeout, 10.0)) if timeout else _TIMEOUT
 
     # -- construction ------------------------------------------------------
     @classmethod
-    def service(cls) -> "SupabaseClient":
+    def service(cls, timeout: float | None = None) -> "SupabaseClient":
         settings = get_settings()
-        return cls(settings.supabase.require_service_key(), is_service_role=True)
+        return cls(settings.supabase.require_service_key(), is_service_role=True,
+                   timeout=timeout)
 
     @classmethod
     def as_user(cls, jwt: str) -> "SupabaseClient":
@@ -92,7 +97,7 @@ class SupabaseClient:
     ) -> Any:
         headers = self._headers({"Prefer": prefer} if prefer else None)
         url = f"{self._base}/{table}"
-        with httpx.Client(timeout=_TIMEOUT) as client:
+        with httpx.Client(timeout=self._timeout) as client:
             response = client.request(
                 method, url, params=params, json=json_body, headers=headers
             )

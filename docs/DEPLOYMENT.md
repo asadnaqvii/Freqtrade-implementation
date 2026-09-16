@@ -72,23 +72,53 @@ caches candle data between runs.
 
 ## The database URL
 
-Use the **session pooler** URI from the Supabase dashboard, not the direct
-connection:
+Use the **direct** connection, with the project's **IPv4 add-on** enabled
+(Settings → Add-ons → IPv4, $4/month):
 
 ```
-postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+postgresql://ft_bot:<password>@db.<ref>.supabase.co:5432/postgres
 ```
 
-`db.<ref>.supabase.co` resolves to IPv6 only, and Render cannot reach it. The
-symptom is a connection timeout that looks like a firewall problem.
+Without the add-on `db.<ref>.supabase.co` resolves to IPv6 only, which Render
+cannot reach -- the symptom is a connection timeout that looks like a firewall
+problem. The session pooler is IPv4 by nature, and was the original path; it
+is also where every crash of this bot began (dropped connections, checkout
+timeouts, authentication hiccups), so it is now the fallback rather than the
+route. Put its URI in `SUPABASE_DB_URL_FALLBACK`:
 
-You do not need to add a schema parameter. The bot appends
-`?options=-c search_path=ft_main,public` itself, which is what keeps freqtrade's
-tables out of the API surface.
+```
+postgresql://ft_bot.<ref>:<password>@aws-1-<region>.pooler.supabase.com:5432/postgres
+```
+
+Note the username: `ft_bot` on the direct host, `ft_bot.<ref>` through the
+pooler. The bot tries the fallback only when the direct host does not answer
+at boot, and says so in its log.
+
+The bot appends TCP keepalives, a 10-second `connect_timeout` and an
+`application_name` to whichever URL it uses, so its connections are visible
+by name in `pg_stat_activity`. The schema is not in the URL: the `ft_bot` role
+carries `search_path = ft_main, public` as a server-side default, which is the
+one form that survives both routes.
+
+## Alerting
+
+Two things watch the bot, and neither depends on Supabase being up:
+
+- `HEARTBEAT_URL` on the bot -- a [healthchecks.io](https://healthchecks.io)
+  ping URL with a 10-minute grace period. The bot pings it every two minutes
+  **only while it is verifiably trading** (state running, trading loop going
+  round). Anything else -- a crash, a hung process, a deliberate stop, Supabase
+  unreachable, Render down -- is silence, and silence sends the email.
+- `WORKER_HEARTBEAT_URL` on the worker -- the same, for the process that runs
+  the watchdog, so the watcher is watched.
+- `ALERT_WEBHOOK_URL` on the worker -- where the watchdog posts incidents
+  (offline, not trading) and repeats them every 30 minutes while they stay
+  open. A healthchecks.io check's `/log` URL works, as does any JSON webhook.
 
 ## Order of operations
 
-1. Apply `db/migrations/0001` … `0012` to the Supabase project.
+1. Apply every file in `db/migrations/` in order -- see `db/migrations/README.md`
+   for the two exceptions (0009 is production-only, 0014 is not yet applied anywhere).
 2. Migrate the existing trade history — see `DATA_MIGRATION.md`. Do this
    **before** pointing the bot at Postgres.
 3. Deploy the blueprint, setting the secrets above.

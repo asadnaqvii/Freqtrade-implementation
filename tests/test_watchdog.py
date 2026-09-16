@@ -262,3 +262,88 @@ def test_no_webhook_configured_still_records_the_incident(monkeypatch):
     c = Client(bots=[bot(health="offline")])
     watchdog.sweep(c)
     assert c.inserted, "the incident record is the fallback when nothing can be pushed"
+
+
+# ---------------------------------------------------------------------------
+# A hung loop, a deliberate stop with positions, and paging again
+# ---------------------------------------------------------------------------
+
+def test_the_watchdog_treats_hung_the_same_as_stopped(no_real_webhooks):
+    """The bot's own verdict on itself: answering, heartbeating, and its
+    trading loop not going round. The most dangerous shape of all."""
+    client = Client(bots=[bot(status="hung", open_trades=2)])
+    watchdog.sweep(client)
+    [(table, row)] = client.inserted
+    assert row["kind"] == "not_trading"
+    assert "loop" in row["detail"] and "2 position(s)" in row["detail"]
+    assert no_real_webhooks, "hung pages, like any other not-trading state"
+
+
+def test_a_deliberately_stopped_bot_with_positions_is_surfaced_without_paging(no_real_webhooks):
+    client = Client(bots=[bot(status="stopped", desired_state="stopped", open_trades=3)])
+    troubled = watchdog.sweep(client)
+    [(_, row)] = client.inserted
+    assert row["kind"] == "stopped_with_positions"
+    assert "3 position(s)" in row["detail"]
+    assert row["notified"] is False
+    assert no_real_webhooks == [], "being stopped is the user's choice; nobody is paged"
+    assert troubled == 0
+
+
+def test_a_deliberately_stopped_bot_without_positions_records_nothing(no_real_webhooks):
+    client = Client(bots=[bot(status="stopped", desired_state="stopped", open_trades=0)])
+    watchdog.sweep(client)
+    assert client.inserted == []
+
+
+def test_starting_the_bot_again_resolves_the_stopped_with_positions_record(no_real_webhooks):
+    client = Client(bots=[bot(status="running", desired_state="running", open_trades=3)],
+                    open_incidents=[{"id": 4, "kind": "stopped_with_positions",
+                                     "opened_at": datetime.now(timezone.utc).isoformat()}])
+    watchdog.sweep(client)
+    assert any(values.get("resolved_at") for _, values, _ in client.updated)
+    assert no_real_webhooks == []
+
+
+def test_an_incident_that_stays_open_pages_again(no_real_webhooks):
+    """One page at minute one was the whole alerting story of a five-day outage."""
+    long_ago = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    client = Client(bots=[bot(status="stopped")],
+                    open_incidents=[{"id": 9, "kind": "not_trading", "opened_at": long_ago,
+                                     "last_paged_at": long_ago, "pages": 1}])
+    watchdog.sweep(client)
+    assert client.inserted == [], "the same outage is not a second incident"
+    assert any("still not_trading" in text and "45 minutes" in text
+               for _, text in no_real_webhooks)
+    assert any(values.get("pages") == 2 for _, values, _ in client.updated)
+
+
+def test_a_recently_paged_incident_is_not_paged_again(no_real_webhooks):
+    long_ago = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
+    just_now = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    client = Client(bots=[bot(status="stopped")],
+                    open_incidents=[{"id": 9, "kind": "not_trading", "opened_at": long_ago,
+                                     "last_paged_at": just_now, "pages": 2}])
+    watchdog.sweep(client)
+    assert no_real_webhooks == []
+    assert not any("pages" in values for _, values, _ in client.updated)
+
+
+def test_an_open_incident_nobody_pages_about_is_never_repeated(no_real_webhooks):
+    long_ago = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+    client = Client(bots=[bot(status="stopped", desired_state="stopped", open_trades=1)],
+                    open_incidents=[{"id": 2, "kind": "stopped_with_positions",
+                                     "opened_at": long_ago, "pages": 0}])
+    watchdog.sweep(client)
+    assert no_real_webhooks == []
+
+
+def test_the_dead_mans_ping_never_raises(monkeypatch):
+    import urllib.request
+
+    def refuse(request, timeout=0):
+        raise OSError("network down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    assert watchdog.ping("https://hc-ping.com/abc") is False
+    assert watchdog.ping(None) is False

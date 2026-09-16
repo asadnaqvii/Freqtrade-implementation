@@ -57,13 +57,26 @@ services:
         sync: false
       - key: FREQTRADE__EXCHANGE__PASSWORD
         sync: false
-      # Supabase. SUPABASE_DB_URL should be the session pooler URI: the direct
-      # db.<ref>.supabase.co host resolves to IPv6 only, which Render cannot reach.
+      # Supabase. SUPABASE_DB_URL is the DIRECT connection
+      # (postgresql://ft_bot:...@db.<ref>.supabase.co:5432/postgres), which
+      # needs the project's IPv4 add-on: the direct host is IPv6-only without
+      # it, and Render is IPv4-only. Every one of this bot's crashes began in
+      # the session pooler, so the pooler is now the fallback, not the path:
+      # put its URI (username ft_bot.<ref>) in SUPABASE_DB_URL_FALLBACK and the
+      # bot tries it only when the direct host does not answer at boot.
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: SUPABASE_DB_URL
+        sync: false
+      - key: SUPABASE_DB_URL_FALLBACK
+        sync: false
+      # The dead-man's switch: a healthchecks.io ping URL. The bot pings it
+      # every two minutes while it is verifiably trading and at no other time,
+      # so silence -- crash, hang, stopped, Supabase down, Render down --
+      # reaches a person without depending on any part of this system.
+      - key: HEARTBEAT_URL
         sync: false
       - key: PLATFORM_OWNER_ID
         sync: false
@@ -159,6 +172,14 @@ services:
         value: /data/user_data
       - key: WORKER_POLL_SECONDS
         value: "10"
+      # Where the watchdog posts "the bot has stopped" and "still stopped":
+      # a healthchecks.io check's /log endpoint works, as does any JSON
+      # webhook. And the worker's own dead-man's switch -- the worker is what
+      # watches the bot, so something outside both has to watch the worker.
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: WORKER_HEARTBEAT_URL
+        sync: false
     disk:
       name: candles
       mountPath: /data

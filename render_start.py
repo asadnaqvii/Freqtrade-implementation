@@ -126,6 +126,12 @@ if _carrying:
     print(_carrying, flush=True)
 
 
+#: Seconds to give the control plane for the boot-time read of what was asked
+#: for. It runs before the config is written and before the port answers, so
+#: a slow Supabase here is minutes of nothing serving. Best effort anyway.
+DESIRED_STATE_TIMEOUT = 5
+
+
 def _desired_state():
     """running / paused / stopped, as the dashboard last left this bot.
 
@@ -140,7 +146,7 @@ def _desired_state():
     try:
         from app.core.supabase import SupabaseClient
 
-        row = SupabaseClient.service().select_one(
+        row = SupabaseClient.service(timeout=DESIRED_STATE_TIMEOUT).select_one(
             "bot_instances", columns="metadata,trading_mode",
             filters={"name": f"eq.{bot_name}"},
         ) or {}
@@ -265,11 +271,13 @@ print(f"exchange key configured: {'yes' if config['exchange']['key'] else 'no'}"
 # Database
 # ---------------------------------------------------------------------------
 db_url = None
+db_url_fallback = None
 try:
     from app.core.config import get_settings
 
     settings = get_settings()
     db_url = settings.freqtrade_db_url
+    db_url_fallback = settings.freqtrade_db_url_fallback
 except Exception as exc:
     print(f"WARNING: could not read platform settings ({exc}); using SQLite", flush=True)
 
@@ -285,8 +293,9 @@ _stood_down = threading.Event()
 #: How long to wait for the platform to stop a stood-down instance before
 #: exiting anyway. Only reached if the platform never terminates us, which a
 #: rolling deploy always does; leaving an inert process up forever is worse than
-#: the one failure notice exiting costs.
-STANDDOWN_EXIT_AFTER = 900
+#: the one failure notice exiting costs. Nothing trades during this window, so
+#: it is short.
+STANDDOWN_EXIT_AFTER = 300
 
 #: How long after taking the lock to disregard the "somebody wants it" flag.
 #: Postgres releases a dead connection's advisory locks when it reaps the
@@ -303,6 +312,85 @@ LOCK_RETRY_SECONDS = 60
 #: call -- against the failure it catches, which is the bot sitting up and
 #: healthy while managing no stop-loss on real positions.
 SUPERVISE_SECONDS = 120
+
+#: How long after starting the trader to wait before checking that it stuck,
+#: and how many times to try. freqtrade assigns its initial state after the
+#: pairlist refresh, so a start that lands before that line is overwritten by
+#: it -- observed 2026-09-16 05:53, self-healed two minutes later. Now checked.
+START_SETTLE_SECONDS = 5
+START_ATTEMPTS = 3
+
+#: Seconds the trading loop may go without going round before the heartbeat
+#: reports "hung". Generous: one pass over 25 pairs, plus freqtrade's own 30 s
+#: pause on a temporary error, plus the 30 s pause added below, is well inside.
+LOOP_STALL_SECONDS = 300
+
+#: The dead-man's switch: a URL that expects to be pinged, and tells a person
+#: when the pings stop. Pinged only while the trader is verifiably trading, so
+#: silence -- a crash, a hang, a stop, Supabase down, Render down -- is the
+#: alarm, and it does not depend on any part of this system to be raised.
+HEARTBEAT_URL = (os.environ.get("HEARTBEAT_URL") or "").strip()
+
+#: Set by the patched trading loop each time it goes round. None until then.
+_last_loop_at = None
+
+#: The FreqtradeBot instance once it exists, and the event that says so. Set
+#: by the patched constructor, which returns only after freqtrade has assigned
+#: its initial state -- so anything waiting on this cannot race that line.
+_bot_holder = {}
+_bot_ready = threading.Event()
+
+
+def _first_line(exc):
+    """The first line of an exception's message, or its repr when empty."""
+    text = str(exc).strip()
+    return text.splitlines()[0][:200] if text else repr(exc)
+
+
+def _trader_state():
+    """The trader's state as freqtrade holds it in memory, lower-case, or None
+    when there is no handle on the bot yet."""
+    bot = _bot_holder.get("bot")
+    if bot is None:
+        return None
+    return str(bot.state).lower()
+
+
+def _set_trader_state(name):
+    """Flip the trader in-process -- exactly what /start and /stop do from the
+    API thread, without depending on that thread being able to answer.
+
+    Returns the state afterwards, or None when there is no handle yet."""
+    bot = _bot_holder.get("bot")
+    if bot is None:
+        return None
+    from freqtrade.enums import State
+
+    bot.state = State[name.upper()]
+    return str(bot.state).lower()
+
+
+def _loop_is_stalled():
+    """Has the trading loop stopped going round? False until it has started."""
+    return (_last_loop_at is not None
+            and time.monotonic() - _last_loop_at > LOOP_STALL_SECONDS)
+
+
+def _ping_heartbeat(path=""):
+    """Tell the dead-man's switch we are alive -- or, with "/fail", that we are
+    not. Never raises: a page that cannot be sent must not stop the trader."""
+    if not HEARTBEAT_URL:
+        return False
+    import urllib.request
+
+    try:
+        request = urllib.request.Request(HEARTBEAT_URL.rstrip("/") + path,
+                                         data=b"", method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status < 300
+    except Exception as exc:  # noqa: BLE001 - the switch is a witness, never a dependency
+        print(f"heartbeat ping{path} failed: {exc}", flush=True)
+        return False
 
 
 def _lock_keys(name):
@@ -511,11 +599,20 @@ def stand_down(reason, local):
     _stood_down.set()
 
     # Stop trading first. Between here and being terminated this process
-    # must not act on the market, and the replacement is about to.
-    try:
-        print(f"stopped trading ({local('stop', 'POST').get('status')})", flush=True)
-    except Exception as exc:  # noqa: BLE001 - releasing the lock still matters
-        print(f"could not stop the trader before standing down: {exc}", flush=True)
+    # must not act on the market, and the replacement is about to. Done
+    # in-process where possible: the API thread can be wedged on a dead
+    # database connection, and a /stop that timed out used to be swallowed --
+    # releasing the lock below while this process's loop was still RUNNING,
+    # which is two live traders on one account, the exact thing the lock
+    # exists to prevent. The HTTP route stays for a process with no handle.
+    stopped = _set_trader_state("stopped")
+    if stopped is not None:
+        print(f"stopped trading in-process (state {stopped})", flush=True)
+    else:
+        try:
+            print(f"stopped trading ({local('stop', 'POST').get('status')})", flush=True)
+        except Exception as exc:  # noqa: BLE001 - releasing the lock still matters
+            print(f"could not stop the trader before standing down: {exc}", flush=True)
 
     # Closing the connection releases the advisory lock server-side, which
     # is what the replacement is waiting on.
@@ -535,6 +632,7 @@ def stand_down(reason, local):
         # a true one, unlike the handover above.
         print("the lock connection is gone and no replacement is waiting; "
               "exiting so the platform starts a fresh instance", flush=True)
+        _ping_heartbeat("/fail")
         os._exit(1)
         return  # unreachable in production; os._exit does not return
 
@@ -551,83 +649,153 @@ def stand_down(reason, local):
     os._exit(0)
 
 
-def verify_database(url, expected_schema):
-    """Connect once and confirm the session lands in the right schema.
+# --- database check ---
+#: Waits between attempts to reach the database at boot: about nine minutes in
+#: all before the process concedes and starts anyway. A transient pooler error
+#: here used to be `sys.exit(1)` on the first try -- a crash loop the platform
+#: backs off to fifteen-minute intervals, for a blip that lasted seconds.
+DB_VERIFY_WAITS = (15, 30, 60, 60, 60, 60, 60, 60, 60)
+#: The fallback url (the pooler, once the direct host is the default) gets a
+#: shorter run: if neither answers, waiting longer is not the fix.
+DB_FALLBACK_WAITS = (15, 30)
 
-    Freqtrade writes unqualified SQL -- `INSERT INTO trades` -- so the schema is
-    decided entirely by search_path. Getting that wrong does not fail at
-    startup; it fails on the first trade, which is a bad time to find out.
-    Checking here turns a silent misconfiguration into a refusal to start.
-    """
-    try:
-        import psycopg2
-    except ImportError:
-        print("psycopg2 not installed; cannot verify the database", flush=True)
-        return False
 
-    # psycopg2 wants a plain postgresql:// url, not SQLAlchemy's driver form.
-    raw = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-    try:
-        conn = psycopg2.connect(raw, connect_timeout=20)
-    except Exception as exc:
-        detail = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
-        print(f"DATABASE ERROR: {detail}", flush=True)
-        if "ENOTFOUND" in detail or "Tenant or user not found" in detail:
+def _explain_connection_failure(detail, raw):
+    """Turn the two connection errors people actually hit into instructions."""
+    pooled = "pooler.supabase.com" in raw
+    if "ENOTFOUND" in detail or "Tenant or user not found" in detail:
+        if pooled:
             print(
                 "  The pooler does not recognise that user. Supabase's pooler expects "
                 "<role>.<project-ref> as the username, and the host must be the pooler "
                 "shown in Settings -> Database -> Connection string -> Session pooler.",
                 flush=True,
             )
-        elif "timeout" in detail.lower():
+        else:
             print(
-                "  Connection timed out. The direct host db.<ref>.supabase.co is "
-                "IPv6-only and unreachable from Render; use the session pooler host.",
+                "  That is the pooler's error on a direct host: with the direct host "
+                "the username is the plain role (ft_bot), not role.<project-ref>.",
                 flush=True,
             )
-        return False
-
-    try:
-        cur = conn.cursor()
-        cur.execute("show search_path")
-        search_path = cur.fetchone()[0]
-        cur.execute("select current_user, current_database()")
-        user, database = cur.fetchone()
-        print(f"database: connected as {user} to {database}", flush=True)
-        print(f"database: search_path = {search_path}", flush=True)
-
-        if expected_schema not in [p.strip().strip('\"') for p in search_path.split(",")]:
-            print(
-                f"DATABASE ERROR: search_path is {search_path!r} but freqtrade's tables "
-                f"belong in {expected_schema!r}. Its SQL is unqualified, so it would "
-                f"create and read tables in the wrong schema.\n"
-                f"  Fix with:  alter role {user} set search_path = {expected_schema}, public;",
-                flush=True,
-            )
-            return False
-
-        cur.execute("select to_regclass(%s)", (f"{expected_schema}.trades",))
-        existing = cur.fetchone()[0]
+    elif ("timeout" in detail.lower() or "could not translate host name" in detail
+          or "Network is unreachable" in detail):
         print(
-            f"database: {expected_schema}.trades "
-            + ("found" if existing else "not created yet (freqtrade will create it)"),
+            "  Nothing answered. The direct host db.<ref>.supabase.co is IPv6-only "
+            "unless the project's IPv4 add-on is enabled; without it, use the session "
+            "pooler URI (and set it as SUPABASE_DB_URL_FALLBACK so this boot can fall "
+            "back to it).",
             flush=True,
         )
-        return True
-    finally:
-        conn.close()
+
+
+def _connect_with_retry(url, waits=DB_VERIFY_WAITS):
+    """A connection, or None once every attempt has failed. Never raises."""
+    try:
+        import psycopg2
+    except ImportError:
+        print("psycopg2 not installed; cannot verify the database", flush=True)
+        return None
+
+    # psycopg2 wants a plain postgresql:// url, not SQLAlchemy's driver form.
+    raw = url.replace("postgresql+psycopg2://", "postgresql://", 1)
+    attempts = len(waits) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return psycopg2.connect(raw, connect_timeout=20)
+        except Exception as exc:  # noqa: BLE001 - every failure here is reported, then retried
+            detail = _first_line(exc)
+            print(f"DATABASE ERROR: {detail}", flush=True)
+            _explain_connection_failure(detail, raw)
+            if attempt <= len(waits):
+                wait = waits[attempt - 1]
+                print(f"  retrying in {wait}s (attempt {attempt} of {attempts})", flush=True)
+                time.sleep(wait)
+    return None
+
+
+def _check_schema(conn, expected_schema):
+    """True when the session lands in the right schema; prints the fix if not.
+
+    Freqtrade writes unqualified SQL -- `INSERT INTO trades` -- so the schema is
+    decided entirely by search_path. Getting that wrong does not fail at
+    startup; it fails on the first trade, which is a bad time to find out.
+    """
+    cur = conn.cursor()
+    cur.execute("show search_path")
+    search_path = cur.fetchone()[0]
+    cur.execute("select current_user, current_database()")
+    user, database = cur.fetchone()
+    print(f"database: connected as {user} to {database}", flush=True)
+    print(f"database: search_path = {search_path}", flush=True)
+
+    if expected_schema not in [p.strip().strip('\"') for p in search_path.split(",")]:
+        print(
+            f"DATABASE ERROR: search_path is {search_path!r} but freqtrade's tables "
+            f"belong in {expected_schema!r}. Its SQL is unqualified, so it would "
+            f"create and read tables in the wrong schema.\n"
+            f"  Fix with:  alter role {user} set search_path = {expected_schema}, public;",
+            flush=True,
+        )
+        return False
+
+    cur.execute("select to_regclass(%s)", (f"{expected_schema}.trades",))
+    existing = cur.fetchone()[0]
+    print(
+        f"database: {expected_schema}.trades "
+        + ("found" if existing else "not created yet (freqtrade will create it)"),
+        flush=True,
+    )
+    return True
+
+
+def verify_database(url, expected_schema, fallback_url=None):
+    """Which url to trade with, and whether we may: (url, verdict).
+
+    The verdict is "ok"; "misconfigured" -- wrong schema or user, which is a
+    refusal to start because trading there loses history silently; or
+    "unreachable" -- nothing answered after every attempt, in which case the
+    process starts anyway: freqtrade retries its first connection and the
+    trading lock is retried until it is taken, and a bot that boots into a
+    retry beats one the platform restarts every fifteen minutes.
+    """
+    for candidate, waits, label in ((url, DB_VERIFY_WAITS, "database"),
+                                    (fallback_url, DB_FALLBACK_WAITS, "fallback database")):
+        if not candidate:
+            continue
+        if label == "fallback database":
+            print("trying the fallback database url", flush=True)
+        conn = _connect_with_retry(candidate, waits=waits)
+        if conn is None:
+            continue
+        try:
+            ok = _check_schema(conn, expected_schema)
+        finally:
+            conn.close()
+        if label == "fallback database" and ok:
+            print("using the fallback database url for this run", flush=True)
+        return candidate, ("ok" if ok else "misconfigured")
+    return url, "unreachable"
 
 
 if db_url:
     # Never print the URL; it carries the database password.
     print(f"persistence: postgres, schema {db_schema}", flush=True)
-    if not verify_database(db_url, db_schema):
+    db_url, verdict = verify_database(db_url, db_schema, db_url_fallback)
+    if verdict == "misconfigured":
         print(
             "Refusing to start against a database that is not set up correctly. "
             "Trading with the wrong schema loses trade history silently.",
             flush=True,
         )
         sys.exit(1)
+    if verdict == "unreachable":
+        print(
+            "DATABASE UNREACHABLE after every attempt -- starting anyway. freqtrade "
+            "retries its first connection and the trading lock is retried until it "
+            "is taken; a bot that boots into a retry beats one the platform restarts "
+            "every fifteen minutes.",
+            flush=True,
+        )
 else:
     print("persistence: SQLite (ephemeral -- set SUPABASE_DB_URL to keep history)", flush=True)
 
@@ -1058,6 +1226,12 @@ def register_and_heartbeat():
                 # The API not answering is itself worth recording: the process
                 # is alive enough to heartbeat and not alive enough to trade.
                 state = "unreachable"
+            # A port that answers proves the API thread is alive, not that the
+            # trader is. A "Fatal exception!" can leave exactly that: the loop
+            # dead, the API up, and a heartbeat that reads "running" for days.
+            # The loop itself stamps the clock; five silent minutes is "hung".
+            if state == "running" and _loop_is_stalled():
+                state = "hung"
             try:
                 client.update(
                     "bot_instances",
@@ -1071,7 +1245,12 @@ def register_and_heartbeat():
     threading.Thread(target=beat, daemon=True, name="heartbeat").start()
 
 
-register_and_heartbeat()
+# Off the boot path. This makes four to six control-plane calls at up to thirty
+# seconds each, and it ran synchronously before freqtrade started -- so a slow
+# Supabase was minutes of nothing serving, which the supervisor then had to
+# outwait. Registration already retries from the heartbeat; nothing here needs
+# to happen before the port answers.
+threading.Thread(target=register_and_heartbeat, daemon=True, name="registration").start()
 
 os.makedirs("user_data/strategies", exist_ok=True)
 os.system("cp strategies/*.py user_data/strategies/ 2>/dev/null || true")
@@ -1121,15 +1300,25 @@ def _take_lock_then_trade():
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode() or "{}")
 
-    for _ in range(120):
+    # freqtrade constructs itself before the port answers, and assigns its
+    # initial state only after the pairlist refresh (freqtradebot.py:148). A
+    # /start that lands before that line is overwritten by it -- observed
+    # 2026-09-16 05:53 -- so wait for the whole constructor, not for the port.
+    # Unbounded, and logged: the give-up `return` that used to sit here ended
+    # the supervisor for the life of the process whenever a boot took longer
+    # than two minutes, which a slow database makes routine.
+    waited = 0
+    while not _bot_ready.wait(30):
+        waited += 30
+        if _stood_down.is_set():
+            return
+        print(f"still waiting for freqtrade to finish starting ({waited}s)", flush=True)
+    while not _stood_down.is_set():
         try:
             local("ping")
             break
         except Exception:  # noqa: BLE001 - it is simply not up yet
             time.sleep(1)
-    else:
-        print("freqtrade never answered locally; not taking the trading lock", flush=True)
-        return
 
     # Taking the lock needs its own database connection, so it fails when the
     # database is unreachable -- and this ran once, in a daemon thread, with no
@@ -1163,6 +1352,10 @@ def _take_lock_then_trade():
     while not _stood_down.is_set():
         time.sleep(SUPERVISE_SECONDS)
         _ensure_trading(local)
+        # Only a trader that is verifiably trading gets to say so. Stopped,
+        # hung, or unable to start all fall silent, and silence is the alarm.
+        if _trader_state() == "running" and not _loop_is_stalled():
+            _ping_heartbeat()
 
 
 def _ensure_trading(local, first=False):
@@ -1179,25 +1372,54 @@ def _ensure_trading(local, first=False):
               flush=True)
         return
 
+    # In-process first: freqtrade's own view of itself, with no HTTP in the
+    # way. The API route stays for a process that has no handle on the bot.
+    state = _trader_state()
+    if state is None:
+        try:
+            state = str((local("show_config") or {}).get("state") or "").lower()
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not read the trader's state ({exc})", flush=True)
+            return
+        if not state:
+            # The port answers before the RPC is attached. A start now is lost.
+            print("freqtrade is still starting; leaving it alone", flush=True)
+            return
+
     if wanted != "running":
         if first:
             print(f"lock held; staying {wanted} as asked", flush=True)
-        return
-
-    try:
-        state = str((local("show_config") or {}).get("state") or "").lower()
-    except Exception as exc:  # noqa: BLE001
-        print(f"could not read the trader's state ({exc})", flush=True)
+        else:
+            print(f"trader is {state}; staying {wanted} as asked", flush=True)
         return
 
     if state == "running":
         return
 
-    try:
-        result = local("start", "POST").get("status")
-        print(f"trader was {state or 'not running'}; started it ({result})", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"could not start the trader: {exc}", flush=True)
+    for attempt in range(1, START_ATTEMPTS + 1):
+        after = _set_trader_state("running")
+        if after is None:
+            try:
+                after = local("start", "POST").get("status")
+            except Exception as exc:  # noqa: BLE001
+                print(f"could not start the trader: {exc}", flush=True)
+                return
+        # freqtrade may still be assigning its initial state, which overwrites
+        # this one. Look again before believing it.
+        time.sleep(START_SETTLE_SECONDS)
+        now = _trader_state()
+        if now is None:
+            try:
+                now = str((local("show_config") or {}).get("state") or "").lower()
+            except Exception:  # noqa: BLE001
+                now = ""
+        if now == "running":
+            print(f"trader was {state or 'not running'}; started it ({after})", flush=True)
+            return
+        print(f"start did not stick (state {now!r}); attempt {attempt} of {START_ATTEMPTS}",
+              flush=True)
+    print("could not start the trader: it will not stay running", flush=True)
+    _ping_heartbeat("/fail")
 
 
 if db_url:
@@ -1229,8 +1451,45 @@ if db_url:
     except Exception as exc:
         print(f"WARNING: numpy adapter registration failed: {exc}", flush=True)
 
+#: Engine pool for freqtrade's SQLAlchemy engine. Two scoped sessions on one
+#: engine (trades, and custom data), every API request with a session of its
+#: own, and a rolling deploy doubling all of it: 5 + 5 per instance is a third
+#: of the default 15, and enough. Exhaustion surfaces as a retry in the loop
+#: wrapper below, not as a thirty-second freeze.
+DB_POOL_SIZE = 5
+DB_POOL_OVERFLOW = 5
+DB_POOL_TIMEOUT = 20
+
+#: Waits between attempts to open freqtrade's first connection at boot. That
+#: first connection is the one pool_pre_ping cannot help with, and it used to
+#: be fatal on the first failure.
+DB_BOOT_RETRY_WAITS = (5, 10, 20, 40, 60, 60)
+
+
+def _is_transient_db_error(exc) -> bool:
+    """Does this exception mean "the database is not there right now"?
+
+    Connection dropped, connection refused, pool exhausted, a dead connection
+    handed out: yes. A constraint violation, bad data, a programming error:
+    no -- those are bugs and must stay fatal.
+    """
+    import sqlalchemy.exc as sa
+
+    transient = [sa.OperationalError, sa.InterfaceError, sa.TimeoutError]
+    try:
+        import psycopg2
+
+        transient += [psycopg2.OperationalError, psycopg2.InterfaceError]
+    except ImportError:
+        pass
+    if isinstance(exc, tuple(transient)):
+        return True
+    return isinstance(exc, sa.DBAPIError) and bool(getattr(exc, "connection_invalidated", False))
+
+
 def _make_the_db_connection_survivable() -> bool:
-    """Give freqtrade's engine a health check, since it does not build one.
+    """Give freqtrade's engine a health check and a bounded pool, and retry its
+    first connection, since it does none of that itself.
 
     freqtrade creates its engine as `create_engine(db_url, future=True)` and
     only ever adds kwargs for sqlite, so a Postgres connection gets no
@@ -1241,35 +1500,191 @@ def _make_the_db_connection_survivable() -> bool:
     was holding open positions.
 
     pool_pre_ping makes SQLAlchemy check a pooled connection with a cheap
-    round trip before handing it out, and transparently replace a dead one. It
-    is the standard answer to exactly this, and there is no config option for
-    it, so it goes in here. Patched rather than vendored: freqtrade is a
+    round trip before handing it out, and transparently replace a dead one.
+    The pool is bounded because the default (5 + 10 overflow, per instance,
+    two instances during a deploy) was a plausible cause of the pooler's
+    checkout timeouts, not just a victim of them. And init_db -- reflection,
+    create_all, migrations, all on the very first connection -- is retried,
+    because a pooler blip there is a crash loop the platform backs off to
+    fifteen-minute intervals. Patched rather than vendored: freqtrade is a
     dependency and this survives upgrading it.
     """
     try:
+        from freqtrade import persistence
         from freqtrade.persistence import models
 
-        original = models.create_engine
+        original_engine = models.create_engine
 
         def create_engine(url, **kwargs):
             kwargs.setdefault("pool_pre_ping", True)
             # Recycle well inside the pooler's own idle timeout, so connections
             # are replaced on our schedule rather than dropped on its.
             kwargs.setdefault("pool_recycle", 900)
-            return original(url, **kwargs)
+            if str(url).startswith("postgresql"):
+                # Only Postgres has a real pool; sqlite's StaticPool refuses these.
+                kwargs.setdefault("pool_size", DB_POOL_SIZE)
+                kwargs.setdefault("max_overflow", DB_POOL_OVERFLOW)
+                kwargs.setdefault("pool_timeout", DB_POOL_TIMEOUT)
+            return original_engine(url, **kwargs)
 
         models.create_engine = create_engine
+
+        original_init_db = models.init_db
+
+        def init_db(url):
+            for attempt, wait in enumerate(DB_BOOT_RETRY_WAITS, 1):
+                try:
+                    return original_init_db(url)
+                except Exception as exc:  # noqa: BLE001 - only the transient ones are retried
+                    if not _is_transient_db_error(exc):
+                        raise
+                    print(f"database not ready for freqtrade (attempt {attempt} of "
+                          f"{len(DB_BOOT_RETRY_WAITS) + 1}): {_first_line(exc)}; "
+                          f"retrying in {wait}s", flush=True)
+                    time.sleep(wait)
+            return original_init_db(url)
+
+        # Bound in two places: the module, and the package attribute that
+        # freqtradebot imports from. Patching only the first changes nothing.
+        models.init_db = init_db
+        persistence.init_db = init_db
         return True
     except Exception as exc:  # noqa: BLE001 - better to trade without it than not at all
-        print(f"WARNING: could not enable pool_pre_ping ({exc}); a dropped database "
-              "connection will be fatal", flush=True)
+        print(f"WARNING: could not harden the database connection ({exc}); a dropped "
+              "database connection will be fatal", flush=True)
+        return False
+
+
+def _discard_db_sessions():
+    """Throw away the sessions that just failed, so the next pass starts clean.
+
+    A session that raised mid-transaction is poisoned until rolled back, and
+    the objects it loaded belong to the failed pass. remove() discards both;
+    the next iteration re-queries. Both scoped sessions share the engine.
+    """
+    try:
+        from freqtrade.persistence import Trade
+        from freqtrade.persistence.custom_data import _CustomData
+
+        sessions = (Trade.session, _CustomData.session)
+    except Exception:  # noqa: BLE001 - not initialised yet; nothing to discard
+        return
+    for scoped in sessions:
+        for step in ("rollback", "remove"):
+            try:
+                getattr(scoped, step)()
+            except Exception:  # noqa: BLE001 - it is already broken; that is why we are here
+                pass
+
+
+def _make_the_trading_loop_survive_the_database() -> bool:
+    """Turn a database error in the trading loop into a pause, not a death.
+
+    freqtrade's worker catches only its own TemporaryError and
+    OperationalException; anything else unwinds to main(), which logs "Fatal
+    exception!" and exits 1. Every one of this bot's crashes was that path,
+    with a pooler error at the bottom of it. Wrapped at Worker._worker rather
+    than FreqtradeBot.process, because _worker is also where startup() runs
+    after every /start and where process_stopped() runs -- both database-heavy,
+    both outside process(), both fatal before this.
+
+    Only errors that mean "the database is not there right now" are absorbed;
+    a constraint violation or a programming error still ends the process. The
+    poisoned sessions are discarded, the loop pauses for freqtrade's own retry
+    interval, and the state is handed back unchanged so the next pass retries
+    whatever transition was in flight. The same wrapper stamps the clock the
+    heartbeat reads to tell a running loop from a hung one.
+    """
+    try:
+        from freqtrade.constants import RETRY_TIMEOUT
+        from freqtrade.worker import Worker
+
+        original = Worker._worker
+
+        def _worker(self, old_state):
+            global _last_loop_at
+            _last_loop_at = time.monotonic()
+            try:
+                return original(self, old_state)
+            except Exception as exc:  # noqa: BLE001 - re-raised unless the database is away
+                if not _is_transient_db_error(exc):
+                    raise
+                _discard_db_sessions()
+                print(f"database unavailable mid-loop ({type(exc).__name__}: "
+                      f"{_first_line(exc)}); pausing {RETRY_TIMEOUT}s and carrying on, "
+                      "state unchanged", flush=True)
+                time.sleep(RETRY_TIMEOUT)
+                return old_state
+
+        Worker._worker = _worker
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not make the trading loop survive database errors "
+              f"({exc}); a dropped connection mid-loop will be fatal", flush=True)
+        return False
+
+
+def _get_a_handle_on_the_bot() -> bool:
+    """Keep the FreqtradeBot instance, and know the moment it is ready.
+
+    freqtrade's constructor starts the API server, refreshes the pairlist, and
+    only then assigns the initial state. A /start that arrives over HTTP in
+    between is overwritten -- and from outside, that window is indistinguishable
+    from a bot that is genuinely stopped. With the instance in hand the
+    supervisor sets the state directly, exactly as /start does from the API
+    thread, and waits on an event that fires only after the constructor has
+    returned. Re-armed on every construction, so a config reload is handled.
+    """
+    try:
+        from freqtrade.freqtradebot import FreqtradeBot
+
+        original = FreqtradeBot.__init__
+
+        def __init__(self, config):
+            _bot_ready.clear()
+            original(self, config)
+            _bot_holder["bot"] = self
+            _bot_ready.set()
+
+        FreqtradeBot.__init__ = __init__
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not get a handle on the bot ({exc}); the supervisor "
+              "will use the API instead", flush=True)
         return False
 
 
 if db_url:
+    # Order matters: the database patch must land before freqtrade.worker is
+    # imported, because importing it imports freqtradebot, which binds init_db.
     if _make_the_db_connection_survivable():
-        print("database: pool_pre_ping on, connections recycled every 15m", flush=True)
+        print(f"database: pool_pre_ping on, pool {DB_POOL_SIZE}+{DB_POOL_OVERFLOW}, "
+              "connections recycled every 15m, first connection retried", flush=True)
+    if _make_the_trading_loop_survive_the_database():
+        print("database: errors in the trading loop pause it instead of ending it", flush=True)
+_get_a_handle_on_the_bot()
 
 from freqtrade.main import main as freqtrade_main
 
-sys.exit(freqtrade_main(argv))
+# freqtrade's main() exits the interpreter itself, so the old wrapper that
+# handed its return value to sys.exit never ran -- and neither, sometimes, did
+# the exit. The API server runs on a non-daemon thread that only
+# ApiServer.cleanup() stops, and cleanup is skipped on the paths a "Fatal
+# exception!" takes, so sys.exit waited on that thread forever: a dead trader
+# with a port that still answered and a heartbeat still saying "running".
+# os._exit does not wait for anyone.
+code = 0
+try:
+    freqtrade_main(argv)
+except SystemExit as exc:
+    code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+except BaseException:  # noqa: BLE001 - it is over either way; say why on the way out
+    import traceback
+
+    traceback.print_exc()
+    code = 1
+finally:
+    print(f"freqtrade has finished; exiting {code}", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

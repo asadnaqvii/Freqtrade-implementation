@@ -40,7 +40,7 @@ application tables, every one RLS-protected and owner-scoped.
 
 ## Getting started
 
-1. **Apply the schema.** `db/migrations/0001` … `0012`, in order.
+1. **Apply the schema.** Every file in `db/migrations/`, in order; `db/migrations/README.md` lists the two exceptions.
 2. **Move your existing trade history** before pointing anything at Postgres —
    see [`docs/DATA_MIGRATION.md`](docs/DATA_MIGRATION.md).
 3. **Deploy.** `render.yaml` is a complete blueprint. See

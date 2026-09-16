@@ -39,7 +39,19 @@ ALARMING = {"offline": "offline", "stale": "stale"}
 
 #: Only these get pushed. `stale` is usually a deploy in progress and resolves
 #: itself within a minute; paging on it teaches you to ignore the channel.
+#: `stopped_with_positions` is deliberately not here either: being stopped is
+#: the user's choice. It is recorded, and the dashboard shows it, so that
+#: "stopped" and "stopped with unmanaged positions" never look the same.
 NOTIFY_KINDS = {"offline", "not_trading"}
+
+#: An incident that stays open this long is paged again. One page at minute
+#: one was the whole alerting story of a five-day outage.
+REPAGE_AFTER_SECONDS = 1800
+
+#: Statuses a heartbeating bot can report that mean it is not trading. "hung"
+#: is the bot's own verdict on itself: alive enough to answer, its trading
+#: loop not going round.
+NOT_TRADING_STATUSES = ("stopped", "paused", "unreachable", "hung")
 
 #: How long after starting a bot is allowed to be up without serving yet.
 #: A rolling deploy registers the replacement and starts its heartbeat before
@@ -81,16 +93,38 @@ def notify(webhook_url: str | None, text: str, timeout: int = 10) -> str | None:
         return str(exc)
 
 
+def ping(url: str | None, timeout: int = 5) -> bool:
+    """Touch a dead-man's switch. False when there is none or it did not answer."""
+    if not url:
+        return False
+    request = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status < 300
+    except Exception as exc:  # noqa: BLE001 - the switch is a witness, never a dependency
+        log.warning("heartbeat ping failed: %s", exc)
+        return False
+
+
+def _seconds_since(stamp) -> int | None:
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        return int((_now() - then).total_seconds())
+    except (ValueError, TypeError):
+        return None
+
+
 def _open_incident(client, bot: dict, kind: str, detail: str,
                    webhook_url: str | None) -> None:
     existing = client.select(
-        "bot_incidents", columns="id",
+        "bot_incidents", columns="id,opened_at,last_paged_at,pages",
         filters={"bot_instance_id": f"eq.{bot['id']}", "kind": f"eq.{kind}",
                  "resolved_at": "is.null"},
         limit=1,
     )
     if existing:
-        return                                  # already open; do not re-page
+        _repage(client, bot, kind, detail, existing[0], webhook_url)
+        return
 
     log.warning("bot %s: %s -- %s", bot.get("name"), kind, detail)
     error = None
@@ -99,14 +133,47 @@ def _open_incident(client, bot: dict, kind: str, detail: str,
         if error:
             log.warning("could not send the alert: %s", error)
 
+    paged = kind in NOTIFY_KINDS and error is None
     client.insert("bot_incidents", {
         "owner_id": bot.get("owner_id"),
         "bot_instance_id": bot["id"],
         "kind": kind,
         "detail": detail,
-        "notified": kind in NOTIFY_KINDS and error is None,
+        "notified": paged,
         "notify_error": error,
+        "last_paged_at": _now().isoformat() if paged else None,
+        "pages": 1 if paged else 0,
     })
+
+
+def _repage(client, bot: dict, kind: str, detail: str, incident: dict,
+            webhook_url: str | None) -> None:
+    """Page again about an incident that has stayed open too long.
+
+    The first page is the one that gets missed: it arrives at minute one,
+    when the outage looks like a blip. An incident still open half an hour
+    later is not a blip, and says so again -- with how long it has been.
+    """
+    if kind not in NOTIFY_KINDS:
+        return
+    since_page = _seconds_since(incident.get("last_paged_at") or incident.get("opened_at"))
+    if since_page is None or since_page < REPAGE_AFTER_SECONDS:
+        return
+    open_for = _seconds_since(incident.get("opened_at"))
+    text = f"[{bot.get('name')}] still {kind}"
+    if open_for is not None:
+        text += f" after {open_for // 60} minutes"
+    error = notify(webhook_url, f"{text}: {detail}")
+    if error:
+        log.warning("could not send the repeat alert: %s", error)
+        return
+    try:
+        client.update("bot_incidents",
+                      {"last_paged_at": _now().isoformat(),
+                       "pages": int(incident.get("pages") or 0) + 1},
+                      filters={"id": f"eq.{incident['id']}"})
+    except Exception as exc:  # noqa: BLE001 - the page went out; that was the point
+        log.warning("could not record the repeat page: %s", exc)
 
 
 def _resolve_incidents(client, bot: dict, keep: set[str],
@@ -206,18 +273,33 @@ def sweep(client, *, webhook_url: str | None = None) -> int:
         # the heartbeat is fresh and the service is green -- and no stop is
         # being managed on anything it holds.
         elif (intended == "running"
-              and str(bot.get("status") or "").lower() in ("stopped", "paused",
-                                                           "unreachable")
+              and str(bot.get("status") or "").lower() in NOT_TRADING_STATUSES
               and not _still_booting(bot)):
             reported = str(bot.get("status")).lower()
             open_trades = bot.get("open_trades") or 0
             detail = f"heartbeating normally but reporting {reported}."
+            if reported == "hung":
+                detail = ("heartbeating, answering, and its trading loop has not gone "
+                          "round for minutes -- the process is up and the trader is dead.")
             if open_trades:
                 detail += (f" {open_trades} position(s) open with no stop-loss "
                            "being applied.")
             wanted.add("not_trading")
             _open_incident(client, bot, "not_trading", detail, webhook_url)
             troubled += 1
+
+        # Stopped on purpose, and holding positions. Not an outage -- nobody is
+        # paged -- but a state worth a record and a banner, because "stopped"
+        # and "stopped with nothing managing four open positions" must never
+        # look the same on a dashboard.
+        elif (intended != "running"
+              and str(bot.get("status") or "").lower() in ("stopped", "paused")
+              and (bot.get("open_trades") or 0) > 0):
+            open_trades = bot.get("open_trades") or 0
+            detail = (f"stopped on purpose with {open_trades} position(s) open; no "
+                      "stop-loss is being managed on them until the bot is started.")
+            wanted.add("stopped_with_positions")
+            _open_incident(client, bot, "stopped_with_positions", detail, webhook_url)
 
         _resolve_incidents(client, bot, wanted, webhook_url)
 

@@ -168,3 +168,60 @@ def test_sqlite_is_left_alone():
     """Keepalives are a TCP concept; a file has no socket to keep alive."""
     assert normalise_db_url("sqlite:///user_data/tradesv3.sqlite") == \
         "sqlite:///user_data/tradesv3.sqlite"
+
+
+# ── connection parameters the bot depends on ──────────────────────────────
+
+def test_every_database_url_carries_a_connect_timeout():
+    """libpq's default is to wait forever for a host that does not answer,
+    which turns a stuck pooler into a stuck trading loop."""
+    for url in (normalise_db_url("postgresql://u:p@h:5432/db"),
+                with_search_path("postgresql://u:p@h:5432/db", "ft_main")):
+        assert "connect_timeout=10" in url, url
+
+
+def test_the_bot_names_itself_in_the_connection_string():
+    url = normalise_db_url("postgresql://u:p@h/db", application_name="freqtrade-bot")
+    assert "application_name=freqtrade-bot" in url
+    assert "application_name" not in normalise_db_url("postgresql://u:p@h/db")
+
+
+def test_a_url_that_already_sets_a_timeout_is_left_alone():
+    url = normalise_db_url("postgresql://u:p@h/db?connect_timeout=3")
+    assert "connect_timeout=3" in url
+    assert "connect_timeout=10" not in url
+
+
+def test_the_search_path_option_still_survives_url_assembly():
+    url = with_search_path("postgresql://u:p@h/db", "ft_main", application_name="freqtrade-bot")
+    assert "options=-c%20search_path%3Dft_main%2Cpublic" in url
+    assert "+search_path" not in url
+    assert "application_name=freqtrade-bot" in url
+
+
+def test_the_fallback_url_is_normalised_like_the_first(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://ft_bot:p@direct:5432/db")
+    monkeypatch.setenv("SUPABASE_DB_URL_FALLBACK", "postgresql://ft_bot.ref:p@pooler:5432/db")
+    monkeypatch.setenv("BOT_NAME", "freqtrade-bot")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.freqtrade_db_url.startswith("postgresql+psycopg2://ft_bot:p@direct")
+        assert settings.freqtrade_db_url_fallback.startswith("postgresql+psycopg2://ft_bot.ref:p@pooler")
+        assert "application_name=freqtrade-bot" in settings.freqtrade_db_url_fallback
+    finally:
+        get_settings.cache_clear()
+
+
+def test_no_fallback_means_none(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://ft_bot:p@direct:5432/db")
+    monkeypatch.delenv("SUPABASE_DB_URL_FALLBACK", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().freqtrade_db_url_fallback is None
+    finally:
+        get_settings.cache_clear()

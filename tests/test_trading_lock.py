@@ -645,3 +645,46 @@ def test_a_single_dropped_query_does_not_stop_trading(monkeypatch, server):
     real_time.sleep(0.3)
     assert not yielded, "one transient error must not take a healthy bot down"
     assert calls["n"] > 1, "it must keep polling after a transient error"
+
+
+def test_a_handover_stops_trading_even_when_the_api_will_not_answer(monkeypatch):
+    """The hole a wedged API thread opened.
+
+    stand_down used to POST /stop with a ten-second timeout, swallow the
+    failure, and release the lock anyway -- while this process's loop was
+    still RUNNING. The replacement then took the lock: two live traders on
+    one account, the exact thing the lock exists to prevent. With a handle on
+    the bot the state is flipped in-process first, and the API is not needed.
+    """
+    server = Postgres()
+    ns = load_lock_module(monkeypatch, stub(server))
+    conn = stub(server).connect()
+    ns["_trading_lock_conn"] = conn
+    exits = []
+    ns["os"] = types.SimpleNamespace(_exit=exits.append)
+
+    class Terminated(Exception):
+        """The platform stops the stood-down instance during its wait."""
+
+    def sleep(seconds):
+        raise Terminated
+
+    ns["time"] = types.SimpleNamespace(sleep=sleep)
+
+    class Bot:
+        state = "RUNNING"
+
+    bot = Bot()
+    ns["_bot_holder"]["bot"] = bot
+
+    def local(path, method="GET"):
+        raise TimeoutError("the API thread is wedged")
+
+    with pytest.raises(Terminated):
+        ns["stand_down"]("takeover", local)
+
+    from freqtrade.enums import State
+
+    assert bot.state is State.STOPPED, "stopped in-process, without the API"
+    assert ns["_trading_lock_conn"] is None, "and only then was the lock released"
+    assert exits == [], "nothing exited before the platform stepped in"

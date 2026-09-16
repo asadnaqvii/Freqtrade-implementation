@@ -54,6 +54,10 @@ class SupabaseConfig:
     anon_key: str | None
     jwt_secret: str | None
     db_url: str | None
+    #: A second Postgres url the bot may fall back to at boot when the first
+    #: does not answer -- the session pooler, once the direct host is the
+    #: default. Unset means there is nothing to fall back to.
+    db_url_fallback: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -97,6 +101,8 @@ class BotConfig:
     # Whether to pin the schema via the connection URL. Off by default: through
     # a pooler the role default is the only form that survives.
     search_path_in_url: bool
+    #: The dead-man's switch the bot pings while it is verifiably trading.
+    heartbeat_url: str | None = None
 
     def __post_init__(self) -> None:
         import re
@@ -123,6 +129,9 @@ class WorkerConfig:
     #: so choosing a channel is configuration rather than a code change.
     #: Unset means incidents are still recorded, just not pushed.
     alert_webhook_url: str | None
+    #: The worker's own dead-man's switch. The worker is what watches the bot,
+    #: so something outside both has to notice when the worker itself is gone.
+    heartbeat_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,15 +166,22 @@ class Settings:
         which is still correct when connecting directly rather than through a
         pooler.
         """
-        base = self.supabase.db_url
+        return self._freqtrade_url(self.supabase.db_url)
+
+    @property
+    def freqtrade_db_url_fallback(self) -> str | None:
+        """The same, for SUPABASE_DB_URL_FALLBACK. None when unset."""
+        return self._freqtrade_url(self.supabase.db_url_fallback)
+
+    def _freqtrade_url(self, base: str | None) -> str | None:
         if not base:
             return None
         if self.bot.search_path_in_url:
-            return with_search_path(base, self.bot.db_schema)
-        return normalise_db_url(base)
+            return with_search_path(base, self.bot.db_schema, application_name=self.bot.name)
+        return normalise_db_url(base, application_name=self.bot.name)
 
 
-#: libpq TCP keepalive settings, attached to every Postgres URL we build.
+#: libpq connection settings, attached to every Postgres URL we build.
 #:
 #: Supabase's pooler drops connections -- on its own maintenance, and on idle --
 #: and the bot noticed only when its next query failed with
@@ -175,17 +191,20 @@ class Settings:
 #: Keepalives make the kernel prove the connection is alive every 30 seconds
 #: rather than discovering it is dead at the worst moment, and give up after
 #: five failed probes so a genuinely dead socket surfaces in about a minute
-#: instead of hanging.
+#: instead of hanging. connect_timeout bounds the other end of the problem:
+#: libpq's default is to wait forever for a host that does not answer, which
+#: turns a stuck pooler into a stuck trading loop rather than a retry.
 KEEPALIVES = {
     "keepalives": "1",
     "keepalives_idle": "30",
     "keepalives_interval": "10",
     "keepalives_count": "5",
+    "connect_timeout": "10",
 }
 
 
-def with_keepalives(db_url: str) -> str:
-    """Add TCP keepalives to a Postgres URL, leaving any existing query intact.
+def with_keepalives(db_url: str, application_name: str | None = None) -> str:
+    """Add the connection settings to a Postgres URL, leaving its query intact.
 
     Appended as raw text rather than re-encoded. Round-tripping the query
     through urlencode rewrites `%20` as `+`, and libpq does not read `+` as a
@@ -193,19 +212,25 @@ def with_keepalives(db_url: str) -> str:
     search_path option would arrive as `-c+search_path=...`, which the server
     rejects, and the bot would then write freqtrade's tables into whatever
     schema it defaulted to. Existing keys are left untouched.
+
+    `application_name` is what pg_stat_activity shows for the connection, so
+    the bot's connections can be told from the dashboard's and each other's.
     """
     parts = urlparse(db_url)
     if not parts.scheme.startswith("postgres"):
         return db_url
     present = {key for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
-    additions = [f"{k}={v}" for k, v in KEEPALIVES.items() if k not in present]
+    wanted = dict(KEEPALIVES)
+    if application_name:
+        wanted["application_name"] = quote(application_name, safe="")
+    additions = [f"{k}={v}" for k, v in wanted.items() if k not in present]
     if not additions:
         return db_url
     query = "&".join(filter(None, [parts.query, *additions]))
     return urlunparse(parts._replace(query=query))
 
 
-def normalise_db_url(db_url: str) -> str:
+def normalise_db_url(db_url: str, application_name: str | None = None) -> str:
     """Force an explicit driver so SQLAlchemy cannot pick a different one.
 
     A bare `postgresql://` lets SQLAlchemy choose whatever DBAPI it finds. Being
@@ -218,10 +243,10 @@ def normalise_db_url(db_url: str) -> str:
     scheme = parts.scheme
     if scheme in {"postgres", "postgresql"}:
         scheme = "postgresql+psycopg2"
-    return with_keepalives(urlunparse(parts._replace(scheme=scheme)))
+    return with_keepalives(urlunparse(parts._replace(scheme=scheme)), application_name)
 
 
-def with_search_path(db_url: str, schema: str) -> str:
+def with_search_path(db_url: str, schema: str, application_name: str | None = None) -> str:
     """Attach `options=-c search_path=<schema>,public` to a Postgres URL.
 
     This is what keeps freqtrade's tables out of `public`, and therefore out of
@@ -246,13 +271,14 @@ def with_search_path(db_url: str, schema: str) -> str:
     query = parts.query
     if "options=" in query:
         # Caller already pinned a search_path; respect it rather than fighting.
-        return with_keepalives(urlunparse(parts._replace(scheme=scheme)))
+        return with_keepalives(urlunparse(parts._replace(scheme=scheme)), application_name)
 
     encoded = f"options={quote(options, safe='')}"
     query = f"{query}&{encoded}" if query else encoded
     # Keepalives matter here as much as on the default path: this url is what a
     # long-lived trading process holds open for days.
-    return with_keepalives(urlunparse(parts._replace(scheme=scheme, query=query)))
+    return with_keepalives(urlunparse(parts._replace(scheme=scheme, query=query)),
+                           application_name)
 
 
 @lru_cache(maxsize=1)
@@ -265,6 +291,7 @@ def get_settings() -> Settings:
         # Accept the freqtrade-style name too, since the bot's env already uses
         # that prefix for everything else it reads.
         db_url=_env("SUPABASE_DB_URL") or _env("FREQTRADE__DB_URL") or _env("DATABASE_URL"),
+        db_url_fallback=_env("SUPABASE_DB_URL_FALLBACK") or None,
     )
 
     bot = BotConfig(
@@ -283,6 +310,7 @@ def get_settings() -> Settings:
         deploy_target=_env("DEPLOY_TARGET", "render") or "render",
         environment=_env("ENVIRONMENT", "production") or "production",
         search_path_in_url=_env_bool("FREQTRADE_DB_SEARCH_PATH_IN_URL", False),
+        heartbeat_url=_env("HEARTBEAT_URL") or None,
     )
 
     worker = WorkerConfig(
@@ -294,6 +322,7 @@ def get_settings() -> Settings:
         job_timeout_seconds=_env_int("WORKER_JOB_TIMEOUT_SECONDS", 3600),
         max_download_days=_env_int("BACKTEST_MAX_DOWNLOAD_DAYS", 1825),
         alert_webhook_url=_env("ALERT_WEBHOOK_URL") or None,
+        heartbeat_url=_env("WORKER_HEARTBEAT_URL") or None,
     )
 
     origins = _env("CORS_ORIGINS", "")

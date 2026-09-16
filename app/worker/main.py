@@ -45,6 +45,10 @@ STALL_SWEEP_SECONDS = 120
 #: it goes quiet is the one that reports it rather than the one after that.
 BOT_WATCH_SECONDS = 60
 
+#: How often the worker touches its own dead-man's switch. Its check expects
+#: a ping inside its grace period; two minutes leaves room for a slow sweep.
+HEARTBEAT_PING_SECONDS = 120
+
 #: Longest the queue poll backs off to while nothing is queued. The poll ran at
 #: a flat 10s and made 128,897 `claim_backtest_job` calls in sixteen days --
 #: 465 seconds of database CPU and 773k buffer reads, essentially all of it
@@ -469,6 +473,20 @@ def run_forever() -> None:
         except Exception as exc:  # noqa: BLE001 - never take the worker down for this
             log.warning("bot watchdog failed: %s", exc)
 
+    def ping_heartbeat() -> None:
+        """Touch the worker's dead-man's switch.
+
+        The worker is what watches the bot. If the worker is gone, nothing is
+        watching -- and nothing inside this system can say so. An external
+        switch that expects to hear from this loop can.
+        """
+        try:
+            from app.worker import watchdog
+
+            watchdog.ping(settings.worker.heartbeat_url)
+        except Exception as exc:  # noqa: BLE001 - the switch is a witness, never a dependency
+            log.warning("worker heartbeat failed: %s", exc)
+
     def prune_logs() -> None:
         """Trim the audit log to its retention window."""
         try:
@@ -482,9 +500,11 @@ def run_forever() -> None:
     sweep_stalled()
     sweep_bots()
     prune_logs()
+    ping_heartbeat()
     last_sweep = time.monotonic()
     last_watch = time.monotonic()
     last_prune = time.monotonic()
+    last_ping = time.monotonic()
 
     idle_logged = False
     base_poll = max(int(settings.worker.poll_interval_seconds), 1)
@@ -501,6 +521,10 @@ def run_forever() -> None:
         if time.monotonic() - last_prune >= LOG_PRUNE_SECONDS:
             prune_logs()
             last_prune = time.monotonic()
+
+        if time.monotonic() - last_ping >= HEARTBEAT_PING_SECONDS:
+            ping_heartbeat()
+            last_ping = time.monotonic()
 
         try:
             job = client.rpc("claim_backtest_job", {"p_worker": worker_name})

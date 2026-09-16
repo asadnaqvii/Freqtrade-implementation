@@ -114,7 +114,9 @@ def load_desired_state(monkeypatch, *, row=None, boom=None, env=None, dry_run=Tr
 
     class Client:
         @staticmethod
-        def service():
+        def service(timeout=None):
+            # The boot-time read is capped (DESIRED_STATE_TIMEOUT); the stub
+            # accepts the argument the real client does.
             if boom:
                 raise boom
             return Client()
@@ -133,6 +135,7 @@ def load_desired_state(monkeypatch, *, row=None, boom=None, env=None, dry_run=Tr
         "_env": lambda name, default=None: values.get(name, default),
         "bot_name": "freqtrade-bot",
         "dry_run": dry_run,
+        "DESIRED_STATE_TIMEOUT": 5,
         "print": lambda *a, **k: None,
     }
     exec(compile(source[start:end], "render_start.py", "exec"), namespace)
