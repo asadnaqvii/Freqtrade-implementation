@@ -74,8 +74,38 @@ def call(path: str, token: str) -> object:
         ) from exc
 
 
-def analyse(services: list[dict]) -> list[dict]:
-    """Turn Render's service list into findings. Pure, so it can be tested."""
+#: Exchange credentials. A staging service must not carry any of them.
+EXCHANGE_KEYS = ("FREQTRADE__EXCHANGE__KEY", "FREQTRADE__EXCHANGE__SECRET",
+                 "FREQTRADE__EXCHANGE__PASSWORD")
+
+
+def is_staging(name: str) -> bool:
+    return name.lower().endswith("-staging")
+
+
+def analyse(services: list[dict], env_vars: dict[str, dict[str, str]] | None = None) -> list[dict]:
+    """Turn Render's service list into findings. Pure, so it can be tested.
+
+    `env_vars` maps a service name to its variables. When given, the staging
+    rules run too: a -staging service must be a dry run, must hold no exchange
+    keys, must say ENVIRONMENT=staging, and must not share a database with a
+    production service. Values are compared here and never printed.
+    """
+    env_vars = env_vars or {}
+    production_db = {
+        (key, value)
+        for name, variables in env_vars.items() if not is_staging(name)
+        for key, value in variables.items()
+        if key in ("SUPABASE_URL", "SUPABASE_DB_URL") and value
+    }
+    bot_hosts = {}
+    for entry in services:
+        service = entry.get("service", entry)
+        if service.get("type") == "private_service":
+            url = ((service.get("serviceDetails") or {}).get("url") or "")
+            host = url.split("://")[-1].split(":")[0]
+            if host:
+                bot_hosts[is_staging(service.get("name", ""))] = host
     findings = []
     for entry in services:
         service = entry.get("service", entry)
@@ -118,6 +148,39 @@ def analyse(services: list[dict]) -> list[dict]:
                 "so nothing on the internet can reach its order-placing API."
             )
 
+        variables = env_vars.get(name)
+        if variables is not None and is_staging(name):
+            if looks_like_bot and variables.get("DRY_RUN", "").lower() != "true":
+                problems.append("staging bot is not in dry-run: DRY_RUN must be \"true\" on "
+                                "every -staging bot, or it can place real orders.")
+            held = [k for k in EXCHANGE_KEYS if variables.get(k)]
+            if held:
+                problems.append(f"staging service holds exchange credentials ({', '.join(held)}). "
+                                "Dry-run needs none, and their absence is what makes staging safe.")
+            if variables.get("ENVIRONMENT") != "staging":
+                problems.append("ENVIRONMENT is not 'staging', so the bot's own guard and the "
+                                "dashboard banner cannot tell this apart from production.")
+            shared = [k for k in ("SUPABASE_URL", "SUPABASE_DB_URL")
+                      if variables.get(k) and (k, variables[k]) in production_db]
+            if shared:
+                problems.append(f"shares {', '.join(shared)} with a production service: a second "
+                                "bot on the production database repoints the live views and can "
+                                "evict the production bot through the trading lock.")
+        if variables is not None and is_companion and "app" in lowered:
+            expected_host = bot_hosts.get(is_staging(name))
+            configured = variables.get("FREQTRADE_API_BASE_URL", "")
+            if expected_host and configured:
+                host = configured.split("://")[-1].split(":")[0]
+                port = configured.rsplit(":", 1)[-1] if configured.count(":") >= 2 else ""
+                if host != expected_host:
+                    problems.append(f"FREQTRADE_API_BASE_URL points at host '{host}', but the "
+                                    f"bot's private hostname is '{expected_host}' -- the dashboard "
+                                    "will report the bot as unreachable.")
+                elif port != "8080":
+                    problems.append(f"FREQTRADE_API_BASE_URL uses port '{port}'; the bot listens on "
+                                    "8080. The 10000 Render shows in serviceDetails.url refuses "
+                                    "connections.")
+
         findings.append({
             "name": name, "id": service.get("id"), "type": kind,
             "region": region or "unknown",
@@ -151,7 +214,24 @@ def main() -> int:
         print("Unexpected response shape from Render.", file=sys.stderr)
         return 1
 
-    findings = analyse(services)
+    # Values are needed for the staging rules (is DRY_RUN "true"? do two
+    # services share a database?) and are compared in memory only.
+    env_vars: dict[str, dict[str, str]] = {}
+    for entry in services:
+        service = entry.get("service", entry)
+        if not service.get("id"):
+            continue
+        try:
+            rows = call(f"/services/{service['id']}/env-vars?limit=100", args.token)
+        except RenderError as exc:
+            print(f"  could not read env vars for {service.get('name')}: {exc}", file=sys.stderr)
+            continue
+        env_vars[service.get("name", "?")] = {
+            (v.get("envVar", v) or {}).get("key", "?"): (v.get("envVar", v) or {}).get("value", "")
+            for v in (rows if isinstance(rows, list) else [])
+        }
+
+    findings = analyse(services, env_vars)
     print(f"\n{len(findings)} service(s)\n")
 
     blocking = 0
@@ -166,17 +246,10 @@ def main() -> int:
             for i, line in enumerate(_wrap(problem, 68)):
                 print(f"    {'FAIL ' if i == 0 else '     '}{line}")
 
-        if args.env and f["id"]:
-            try:
-                variables = call(f"/services/{f['id']}/env-vars?limit=100", args.token)
-                names = sorted(
-                    (v.get("envVar", v) or {}).get("key", "?")
-                    for v in (variables if isinstance(variables, list) else [])
-                )
-                # Names only. Values are secrets and several of these are exchange keys.
-                print(f"    env  {', '.join(names) if names else '(none)'}")
-            except RenderError as exc:
-                print(f"    env  could not read: {exc}")
+        if args.env and f["name"] in env_vars:
+            # Names only. Values are secrets and several of these are exchange keys.
+            names = sorted(env_vars[f["name"]])
+            print(f"    env  {', '.join(names) if names else '(none)'}")
         print()
 
     print(f"  {blocking} blocking problem(s)\n")

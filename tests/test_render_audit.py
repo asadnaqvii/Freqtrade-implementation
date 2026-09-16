@@ -73,3 +73,73 @@ def test_region_is_read_from_service_details():
 def test_plan_is_read_from_service_details():
     [found] = analyse([service(region="singapore", name="app", plan="standard")])
     assert found["plan"] == "standard"
+
+
+# ── staging rules ──────────────────────────────────────────────────────────
+
+def staging_set(*, dry_run="true", keys=False, environment="staging",
+                supabase_url="https://staging.supabase.co", api_base="http://freqtrade-bot-staging-ab12:8080"):
+    services = [
+        service(region="singapore", name="freqtrade-bot", type="private_service",
+                serviceDetails={"plan": "standard", "region": "singapore", "url": "freqtrade-bot-hn7v:10000"}),
+        service(region="singapore", name="freqtrade-app", type="web_service"),
+        service(region="singapore", name="freqtrade-bot-staging", type="private_service",
+                serviceDetails={"plan": "standard", "region": "singapore", "url": "freqtrade-bot-staging-ab12:10000"}),
+        service(region="singapore", name="freqtrade-app-staging", type="web_service"),
+    ]
+    bot = {"DRY_RUN": dry_run, "ENVIRONMENT": environment, "SUPABASE_URL": supabase_url,
+           "SUPABASE_DB_URL": "postgresql://x@staging:5432/postgres"}
+    if keys:
+        bot["FREQTRADE__EXCHANGE__KEY"] = "k"
+    env = {
+        "freqtrade-bot": {"DRY_RUN": "false", "ENVIRONMENT": "production",
+                          "SUPABASE_URL": "https://prod.supabase.co",
+                          "SUPABASE_DB_URL": "postgresql://x@prod:5432/postgres"},
+        "freqtrade-app": {"SUPABASE_URL": "https://prod.supabase.co",
+                          "FREQTRADE_API_BASE_URL": "http://freqtrade-bot-hn7v:8080"},
+        "freqtrade-bot-staging": bot,
+        "freqtrade-app-staging": {"SUPABASE_URL": supabase_url, "ENVIRONMENT": environment,
+                                  "FREQTRADE_API_BASE_URL": api_base},
+    }
+    return {f["name"]: f for f in analyse(services, env)}
+
+
+def test_a_correctly_configured_staging_set_passes():
+    found = staging_set()
+    assert all(f["problems"] == [] for f in found.values()), found
+
+
+def test_a_staging_bot_that_is_not_dry_run_is_flagged():
+    found = staging_set(dry_run="false")
+    assert any("dry-run" in p for p in found["freqtrade-bot-staging"]["problems"])
+
+
+def test_a_staging_bot_holding_exchange_keys_is_flagged():
+    found = staging_set(keys=True)
+    assert any("exchange credentials" in p for p in found["freqtrade-bot-staging"]["problems"])
+
+
+def test_a_staging_service_sharing_the_production_database_is_flagged():
+    found = staging_set(supabase_url="https://prod.supabase.co")
+    assert any("production" in p for p in found["freqtrade-bot-staging"]["problems"])
+    assert any("production" in p for p in found["freqtrade-app-staging"]["problems"])
+
+
+def test_a_staging_service_not_marked_as_staging_is_flagged():
+    found = staging_set(environment="production")
+    assert any("ENVIRONMENT" in p for p in found["freqtrade-bot-staging"]["problems"])
+
+
+def test_the_app_must_point_at_its_own_bots_private_hostname():
+    found = staging_set(api_base="http://freqtrade-bot-hn7v:8080")
+    assert any("private hostname" in p for p in found["freqtrade-app-staging"]["problems"])
+
+
+def test_the_app_must_use_the_port_the_bot_listens_on():
+    found = staging_set(api_base="http://freqtrade-bot-staging-ab12:10000")
+    assert any("8080" in p for p in found["freqtrade-app-staging"]["problems"])
+
+
+def test_production_services_are_not_held_to_the_staging_rules():
+    found = staging_set()
+    assert found["freqtrade-bot"]["problems"] == []

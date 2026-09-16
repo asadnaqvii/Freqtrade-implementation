@@ -19,6 +19,7 @@ async def health() -> dict:
     settings = get_settings()
     return {
         "status": "ok",
+        "environment": settings.bot.environment,
         "supabase_configured": settings.supabase.configured,
         "jwt_verification": bool(settings.supabase.jwt_secret),
         "database_url_set": bool(settings.supabase.db_url),
@@ -42,4 +43,7 @@ async def public_config() -> dict:
     return {
         "supabase_url": settings.supabase.url,
         "supabase_anon_key": settings.supabase.anon_key,
+        # Read before sign-in, so the page can say which environment it is
+        # before anyone types a password into it.
+        "environment": settings.bot.environment,
     }

@@ -358,6 +358,12 @@
   #auth { max-width:380px; margin:70px auto; }
 
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
+
+  /* Anything that is not production says so above everything, before sign-in. */
+  .env-banner {
+    position:sticky; top:0; z-index:50; padding:6px 12px; text-align:center;
+    background:var(--warn); color:#fff; font-weight:600; letter-spacing:.02em;
+  }
 </style>
 </head>
 <body>
@@ -1023,6 +1029,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
       "<h2>Not configured</h2><p class=\"hint\">Set SUPABASE_URL and SUPABASE_ANON_KEY on the app " +
       "service, then reload. The API is running; it just has nothing to authenticate against.</p></div>";
     return;
+  }
+  if (cfg.environment && cfg.environment !== "production") {
+    const banner = document.createElement("div");
+    banner.className = "env-banner";
+    banner.textContent = cfg.environment.toUpperCase() +
+      " \u2014 dry run on a copy of production. Nothing here can touch the live account.";
+    document.body.prepend(banner);
+    document.title = "[" + cfg.environment.toUpperCase() + "] " + document.title;
   }
   sb = createClient(cfg.supabase_url, cfg.supabase_anon_key);
   const { data } = await sb.auth.getSession();

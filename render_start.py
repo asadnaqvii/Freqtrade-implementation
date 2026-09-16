@@ -84,6 +84,46 @@ exchange_name = _env("FREQTRADE__EXCHANGE__NAME", "kucoin")
 db_schema = _env("FREQTRADE_DB_SCHEMA", "ft_main")
 bot_name = _env("BOT_NAME", "freqtrade-bot")
 dry_run = (_env("DRY_RUN", "false") or "false").lower() == "true"
+environment = _env("ENVIRONMENT", "production") or "production"
+
+
+def _refuse_live_outside_production(environment, dry_run):
+    """Why this process must not start, or None.
+
+    A staging bot exists so that nothing in it can reach the live account. Two
+    settings decide that, ENVIRONMENT and DRY_RUN, and one wrong edit to either
+    would quietly turn a rehearsal into real orders. So the check is here,
+    before a config is written or an exchange is contacted, and it fails the
+    deploy rather than starting carefully.
+    """
+    if environment != "production" and not dry_run:
+        return (f"REFUSING TO START: ENVIRONMENT={environment!r} but DRY_RUN is not "
+                "true. A bot outside production never trades live. Set DRY_RUN=true, "
+                "or ENVIRONMENT=production if this really is the live bot.")
+    return None
+
+
+def _credentials_a_dry_run_does_not_need(dry_run, names_present):
+    """A warning naming the exchange credentials a dry run is carrying, or None.
+
+    Dry-run uses none of them, and their absence is what makes an environment
+    unable to trade for real. Not fatal -- a live bot flipped to dry-run for a
+    moment should not be locked out -- but loud.
+    """
+    if dry_run and names_present:
+        return ("WARNING: DRY_RUN=true but exchange credentials are set ("
+                + ", ".join(names_present) + "). A dry run does not use them; remove "
+                "them so this environment can never trade for real.")
+    return None
+
+
+_refusal = _refuse_live_outside_production(environment, dry_run)
+if _refusal:
+    print(_refusal, flush=True)
+    sys.exit(1)
+_carrying = _credentials_a_dry_run_does_not_need(dry_run, [v for v in REQUIRED if _env(v)])
+if _carrying:
+    print(_carrying, flush=True)
 
 
 def _desired_state():
@@ -916,15 +956,16 @@ def register_and_heartbeat():
         "stake_amount": config["stake_amount"],
         "max_open_trades": config["max_open_trades"],
         "deploy_target": _env("DEPLOY_TARGET", "render"),
-        "environment": _env("ENVIRONMENT", "production"),
+        "environment": environment,
         "db_schema": db_schema,
         # Whatever FREQTRADE_API_BASE_URL says, and nothing invented if it is
         # unset. The obvious guess -- http://<service-name>:<PORT> -- is wrong on
-        # Render: it appends a suffix to the name and fronts the service on its
-        # own internal port, so the real address looks like
-        # http://freqtrade-bot-hn7v:10000. Recording a plausible-looking address
-        # that does not resolve is worse than recording none, because the
-        # dashboard then reports the bot as down rather than as unconfigured.
+        # Render: it appends a suffix to the name, so the real address looks
+        # like http://freqtrade-bot-hn7v:8080. The port is PORT (8080), not the
+        # 10000 the Render API reports in serviceDetails.url -- that one refuses
+        # connections. Recording a plausible-looking address that does not
+        # resolve is worse than recording none, because the dashboard then
+        # reports the bot as down rather than as unconfigured.
         "api_base_url": _env("FREQTRADE_API_BASE_URL"),
         "status": "running",
         "started_at": now,

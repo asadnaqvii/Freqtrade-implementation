@@ -1,0 +1,152 @@
+# Staging: a duplicate of the production deployment that can never touch the
+# live account.
+#
+# Mirrors render.yaml service for service. Everything that MUST differ from
+# production is set here and nowhere else:
+#
+#   names        -staging suffix (Render service names are account-unique)
+#   branch       staging, never production-2
+#   BOT_NAME     freqtrade-bot-staging -- this keys the advisory trading lock and
+#                the bot_instances row, so it can never evict the production bot
+#   ENVIRONMENT  staging -- render_start.py refuses to start a non-production
+#                bot that is not in dry-run
+#   DRY_RUN      "true", and the exchange credentials are deliberately absent
+#   SUPABASE_*   the staging project (wltovgvpvnsbpzfxtpdu), never production
+#
+# Render blueprint instances can only be created from the dashboard, so this
+# file is applied with scripts/render_staging.py, which drives the Render API
+# from it. Keep the two in step by only ever editing this file.
+#
+# Secrets (sync: false) are read by the script from STAGING_<KEY> in its
+# environment and are never stored here.
+
+services:
+  - type: pserv
+    name: freqtrade-bot-staging
+    runtime: python
+    # standard, not starter: the production bot was OOM-killed on starter's
+    # 512 MB and staging should reproduce production, not a smaller problem.
+    plan: standard
+    region: singapore
+    branch: staging
+    buildCommand: ./build.sh
+    startCommand: python render_start.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: PORT
+        value: "8080"
+      - key: BOT_NAME
+        value: freqtrade-bot-staging
+      - key: ENVIRONMENT
+        value: staging
+      - key: DEPLOY_TARGET
+        value: render
+      - key: DRY_RUN
+        value: "true"
+      - key: FREQTRADE_STRATEGY
+        value: TrendPullbackStrategy_v3
+      - key: FREQTRADE__EXCHANGE__NAME
+        value: kucoin
+      - key: FREQTRADE_DB_SCHEMA
+        value: ft_main
+      - key: FREQTRADE_STAKE_CURRENCY
+        value: USDT
+      - key: FREQTRADE_STAKE_AMOUNT
+        value: "10"
+      - key: FREQTRADE_MAX_OPEN_TRADES
+        value: "6"
+      # Without exchange keys every credential check fails, by design. Once an
+      # hour is often enough to keep proving that.
+      - key: SELFCHECK_INTERVAL_SECONDS
+        value: "3600"
+      # The Learning Module's switch. Off until its adapter has landed here.
+      - key: LEARNING_ENABLED
+        value: "false"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: PLATFORM_OWNER_ID
+        sync: false
+      - key: FREQTRADE_API_BASE_URL
+        sync: false
+      - key: API_USERNAME
+        sync: false
+      - key: API_PASSWORD
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      # Deliberately absent: FREQTRADE__EXCHANGE__KEY, FREQTRADE__EXCHANGE__SECRET,
+      # FREQTRADE__EXCHANGE__PASSWORD (dry-run needs none, and their absence is
+      # what makes this environment safe), HEARTBEAT_URL and ALERT_WEBHOOK_URL
+      # (staging must never page anyone).
+
+  - type: web
+    name: freqtrade-app-staging
+    runtime: python
+    plan: starter
+    region: singapore
+    branch: staging
+    buildCommand: ./build.sh
+    startCommand: uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENVIRONMENT
+        value: staging
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        value: ""
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Not needed: both projects sign tokens with ES256, which the app verifies
+      # against the project's public keys. Set only if HS256 tokens ever appear.
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: FREQTRADE_API_BASE_URL
+        sync: false
+      - key: API_USERNAME
+        sync: false
+      - key: API_PASSWORD
+        sync: false
+      - key: ALLOWED_EMAILS
+        sync: false
+
+  - type: worker
+    name: freqtrade-worker-staging
+    runtime: python
+    plan: starter
+    region: singapore
+    branch: staging
+    buildCommand: ./build.sh
+    startCommand: python -m app.worker.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENVIRONMENT
+        value: staging
+      - key: LOG_LEVEL
+        value: INFO
+      - key: BACKTEST_DATA_DIR
+        value: /data/candles
+      - key: BACKTEST_USER_DIR
+        value: /data/user_data
+      - key: WORKER_POLL_SECONDS
+        value: "10"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+    disk:
+      name: candles-staging
+      mountPath: /data
+      sizeGB: 10
