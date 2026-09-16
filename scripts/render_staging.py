@@ -237,6 +237,8 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--deploy", action="store_true")
+    parser.add_argument("--only", default="",
+                        help="comma-separated service names to act on (default: all)")
     args = parser.parse_args()
     if not args.token:
         print("Set RENDER_API_KEY, or pass --token.", file=sys.stderr)
@@ -246,6 +248,13 @@ def main() -> int:
         return 2
 
     specs = load_blueprint(args.blueprint)
+    if args.only:
+        wanted = {name.strip() for name in args.only.split(",") if name.strip()}
+        unknown = wanted - {spec["name"] for spec in specs}
+        if unknown:
+            print(f"not in the blueprint: {', '.join(sorted(unknown))}", file=sys.stderr)
+            return 2
+        specs = [spec for spec in specs if spec["name"] in wanted]
     try:
         if args.apply:
             owners = call("GET", "/owners?limit=10", args.token) or []
