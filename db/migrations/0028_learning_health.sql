@@ -84,7 +84,8 @@ select
   (select count(*) from public.trading_events e
     where e.bot_instance_id = s.bot_instance_id
       and e.decision_id is null
-      and e.event_type not in ('bot_status', 'unlinked_position_observed', 'unaccounted_exchange_activity')
+      and e.event_type not in ('bot_status', 'unlinked_position_observed',
+                               'unaccounted_exchange_activity', 'risk_decision')
       and e.event_time_utc > now() - interval '24 hours') as events_without_decision_24h,
   (select count(*) from public.trading_decisions d
     where d.bot_instance_id = s.bot_instance_id

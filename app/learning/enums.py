@@ -80,6 +80,7 @@ class RejectionCode(str, Enum):
     INVALID_PRICE = "INVALID_PRICE"
     INVALID_QUANTITY = "INVALID_QUANTITY"
     CONFIRM_ENTRY_FALSE = "CONFIRM_ENTRY_FALSE"
+    BOT_PAUSED = "BOT_PAUSED"
     RISK_VETO = "RISK_VETO"
     ORDER_TIMEOUT = "ORDER_TIMEOUT"
     ORDER_CANCELLED = "ORDER_CANCELLED"
@@ -111,6 +112,7 @@ REJECTION_MEANING = {
     "INVALID_PRICE": "The exchange refused the price on the order.",
     "INVALID_QUANTITY": "The exchange refused the amount on the order.",
     "CONFIRM_ENTRY_FALSE": "The strategy's final confirmation step said no.",
+    "BOT_PAUSED": "The bot was paused, so it managed what it held but opened nothing new.",
     "RISK_VETO": "A risk rule vetoed the trade.",
     "ORDER_TIMEOUT": "The order sat unfilled past the timeout and was cancelled.",
     "ORDER_CANCELLED": "The order was cancelled before it filled.",
