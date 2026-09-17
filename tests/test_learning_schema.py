@@ -143,3 +143,13 @@ def test_the_migrations_are_listed_in_the_readme():
     readme = (MIGRATIONS / "README.md").read_text()
     assert "0027_trading_decisions.sql" in readme
     assert "0028_learning_health.sql" in readme
+
+
+def test_the_health_view_is_read_only_for_everyone():
+    body = without_comments(HEALTH)
+    revoke = "revoke all on public.v_learning_health from anon, authenticated, service_role;"
+    assert revoke in body
+    assert body.index(revoke) < body.index("grant select on public.v_learning_health")
+    for privileges, objects, _roles in grants(HEALTH):
+        if "public.v_learning_health" in objects:
+            assert privileges == {"select"}

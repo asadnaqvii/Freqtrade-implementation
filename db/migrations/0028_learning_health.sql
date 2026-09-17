@@ -94,4 +94,8 @@ select
     where d.bot_instance_id = s.bot_instance_id) as last_decision_at
 from public.learning_writer_status s;
 
+-- A new view gets Supabase's default ALL for every API role. It runs as the
+-- caller (security_invoker), so nothing could be written through it anyway,
+-- but a health view has no business carrying write privileges.
+revoke all on public.v_learning_health from anon, authenticated, service_role;
 grant select on public.v_learning_health to authenticated, service_role;
