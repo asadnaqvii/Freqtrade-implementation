@@ -190,6 +190,22 @@ class SupabaseClient:
         )
         return result or []
 
+    def insert_new_only(
+        self, table: str, rows: dict[str, Any] | Sequence[dict[str, Any]], *, on_conflict: str
+    ) -> None:
+        """Insert rows, silently skipping any the table already has.
+
+        `resolution=ignore-duplicates` becomes ON CONFLICT DO NOTHING. This
+        is the write the append-only evidence tables need: `upsert` would
+        issue an UPDATE on a duplicate, which their trigger refuses, and a
+        replayed record must be free rather than an error.
+        """
+        payload = rows if isinstance(rows, list) else [rows]
+        self._request(
+            "POST", table, params={"on_conflict": on_conflict}, json_body=payload,
+            prefer="resolution=ignore-duplicates,return=minimal",
+        )
+
     def update(
         self, table: str, values: dict[str, Any], *, filters: dict[str, str]
     ) -> list[dict[str, Any]]:
