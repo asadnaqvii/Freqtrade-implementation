@@ -290,7 +290,7 @@ def test_the_thread_drains_on_its_own(tmp_path):
 
 
 def test_the_front_door_is_idempotent_and_safe_before_anything_started(tmp_path, monkeypatch):
-    monkeypatch.setattr(learning, "_state", {"outbox": None, "writer": None})
+    monkeypatch.setattr(learning, "_state", {"outbox": None, "writer": None, "recorder": None, "adapter": None})
     assert learning.health() == {"enabled": False}
     assert learning.flush() is True
 
