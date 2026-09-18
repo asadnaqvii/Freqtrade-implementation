@@ -30,7 +30,7 @@ from app.learning import snapshots
 from app.learning.canonical import sanitise
 from app.learning.contracts import LeakageError, TradingDecision, TradingEvent
 from app.learning.enums import EventType, RejectionStage
-from app.learning.ids import new_decision_id, new_event_id, new_position_id
+from app.learning.ids import deterministic_uuid7, new_event_id
 from app.learning.keys import decision_key, event_key, time_bucket
 
 #: How many decision keys to remember for dedupe. A 25-pair whitelist on 4h
@@ -165,12 +165,16 @@ class Recorder:
                 self.stats["decisions_deduped"] += 1
                 return Opened(existing, key, False, self._info[existing].get("position_id"))
 
-            decision_id = new_decision_id()
+            # Fixed by the candle and the key, not minted: a restart within the
+            # same candle re-opens this decision with the same id, so its events
+            # land on the row that is already there instead of dangling.
+            candle_ms = int(opened_at.timestamp() * 1000)
+            decision_id = str(deterministic_uuid7(candle_ms, key))
             if position_id is None:
                 if ft_trade_id is not None and ft_trade_id in self.trades:
                     position_id = self.trades[ft_trade_id].get("position_id")
                 elif kind == "entry":
-                    position_id = new_position_id()
+                    position_id = str(deterministic_uuid7(candle_ms, key + "|position"))
                 elif ft_trade_id is not None:
                     position_id = self.fallback_position_id(ft_trade_id)
 

@@ -3450,6 +3450,7 @@ async function loadLearningHealth() {
       ["Refused by the database", bot.outbox_quarantined, m.outbox_quarantined, Number(bot.outbox_quarantined) ? "neg" : ""],
       ["Events without a decision", bot.events_without_decision_24h, m.events_without_decision_24h,
         Number(bot.events_without_decision_24h) ? "neg" : ""],
+      ["Orphaned events", bot.events_orphaned_24h, m.events_orphaned_24h, Number(bot.events_orphaned_24h) ? "neg" : ""],
       ["Kept aside", bot.quarantined_24h, m.quarantined_24h, Number(bot.quarantined_24h) ? "neg" : ""],
       ["Last decision", bot.last_decision_at ? shortDate(bot.last_decision_at) : "none yet", m.last_decision_at, ""],
       ["Bot reported", age === null ? "—" : `${age} min ago`, m.reported_at, age !== null && age > 10 ? "neg" : ""],

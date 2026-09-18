@@ -123,7 +123,7 @@ def test_both_files_can_be_applied_twice():
 def test_the_health_view_runs_as_the_reader_and_counts_what_did_not_arrive():
     assert "create or replace view public.v_learning_health\nwith (security_invoker = on)" in HEALTH
     for column in ("decisions_24h", "quarantined_24h", "events_24h", "events_without_decision_24h",
-                   "decisions_without_events_24h", "last_decision_at"):
+                   "decisions_without_events_24h", "events_orphaned_24h", "last_decision_at"):
         assert column in HEALTH
 
 

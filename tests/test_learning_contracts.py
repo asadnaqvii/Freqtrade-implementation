@@ -335,3 +335,13 @@ def test_provenance_names_the_code_parameters_config_and_versions():
     assert built["freqtrade_version"] == "2026.7"
     assert built["run_id"] is None
     assert built["trigger"] == "signal"
+
+
+def test_a_deterministic_id_is_fixed_by_its_inputs_and_still_a_v7():
+    when = int(datetime(2026, 9, 18, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    one = ids.deterministic_uuid7(when, "d1|bot|TRX/USDT")
+    assert one == ids.deterministic_uuid7(when, "d1|bot|TRX/USDT")
+    assert one != ids.deterministic_uuid7(when, "d1|bot|XRP/USDT")
+    assert one.version == 7 and one.variant == uuid.RFC_4122
+    later = ids.deterministic_uuid7(when + 4 * 3600 * 1000, "d1|bot|TRX/USDT")
+    assert later > one and str(later) > str(one)

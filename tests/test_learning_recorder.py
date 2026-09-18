@@ -200,3 +200,26 @@ def test_the_correlation_is_also_kept_in_the_outbox_file(recorder, box):
     entry = open_entry(recorder)
     recorder.link_trade(7, "TRX/USDT", position_id=entry.position_id, origin_decision_id=entry.decision_id)
     assert box.correlation(7) == (entry.position_id, entry.decision_id)
+
+
+def test_a_restart_within_the_same_candle_keeps_the_decisions_identity(box):
+    """The container is replaced on every deploy, and a new process knows
+    nothing. The same candle and the same key must still be the same decision,
+    or the new process's events dangle from an id the database never stored."""
+    identity = {"bot_name": "freqtrade-bot-staging", "bot_instance_id": None, "owner_id": "owner-1"}
+    provenance = {"strategy_code_hash": "abc", "feature_set_version": "tp-v3.1"}
+
+    def fresh_process():
+        return Recorder(box, dict(identity), environment="staging", exchange="kucoin",
+                        strategy_id="TrendPullbackStrategy_v3", provenance=provenance,
+                        clock=lambda: NOW, log=lambda *_: None)
+
+    first = open_entry(fresh_process())
+    again = open_entry(fresh_process())
+    assert again.new is True, "a fresh process does not remember; the ids must not depend on memory"
+    assert again.decision_id == first.decision_id
+    assert again.position_id == first.position_id
+    assert len(queued(box, "decision")) == 1
+    later = open_entry(fresh_process(), candle=CANDLE + timedelta(hours=4),
+                       row={**ROW, "date": CANDLE + timedelta(hours=4)})
+    assert later.decision_id != first.decision_id and later.decision_id > first.decision_id

@@ -74,6 +74,10 @@ def _stall(client, row: dict) -> str | None:
     if quarantined:
         return (f"{quarantined} record(s) quarantined: the database refused them. "
                 f"Last error: {str(row.get('last_error') or 'not given')[:160]}")
+    orphaned = int(row.get("events_orphaned_24h") or 0)
+    if orphaned:
+        return (f"{orphaned} event(s) in the last day reference a decision that was never stored; "
+                "the adapter is attaching events to the wrong decision id.")
 
     last_decision = _when(row.get("last_decision_at"))
     cutoff = _now() - STALE_AFTER

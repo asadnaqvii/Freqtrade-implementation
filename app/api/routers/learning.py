@@ -391,6 +391,7 @@ HEALTH_MEANING = {
     "events_24h": "Events recorded in the last day: signals, orders, fills, positions.",
     "quarantined_24h": "Decisions kept aside because their record failed its own check. Should be zero.",
     "events_without_decision_24h": "Order or position events that could not be tied to a decision. Should be zero.",
+    "events_orphaned_24h": "Events that point at a decision the database does not have. Should be zero; anything else is a bug in the adapter.",
     "decisions_without_events_24h": "Decisions with nothing attached yet. A few young ones are normal.",
     "outbox_pending": "Records waiting on the bot to be shipped to the database. Should be near zero.",
     "outbox_oldest_age_seconds": "How long the oldest waiting record has been waiting.",

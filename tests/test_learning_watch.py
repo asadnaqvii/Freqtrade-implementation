@@ -122,3 +122,9 @@ def test_the_watchdog_leaves_the_learning_incident_alone():
                         "opened_at": iso(minutes=30)}])
     watchdog._resolve_incidents(db, {"id": "b1", "name": "bot"}, keep=set(), webhook_url=None)
     assert db.updated == []
+
+
+def test_events_pointing_at_a_missing_decision_are_a_stall():
+    db = DB(health=[health(events_orphaned_24h=2)])
+    assert learning_watch.sweep(db) == 1
+    assert "never stored" in db.inserted[0][1]["detail"]
