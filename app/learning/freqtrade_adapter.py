@@ -57,7 +57,7 @@ class FreqtradeAdapter:
     def __init__(self, recorder: Recorder, *, Trade: Any, PairLocks: Any, custom_data: Any,
                  exceptions: Any, rpc_handler_base: type | None = None, version: str | None = None,
                  bot_name: str, stake_currency: str, on_cleanup: Callable[[], Any] | None = None,
-                 log: Callable[[str], None] = print) -> None:
+                 log: Callable[[str], None] | None = None) -> None:
         self.recorder = recorder
         self.Trade = Trade
         self.PairLocks = PairLocks
@@ -68,7 +68,7 @@ class FreqtradeAdapter:
         self.bot_name = bot_name
         self.stake_currency = stake_currency
         self.on_cleanup = on_cleanup or (lambda: None)
-        self.log = log
+        self.log = log or (lambda message: print(message, flush=True))
         self.bot: Any = None
         self.strategy: Any = None
         self.config: dict = {}
@@ -876,7 +876,8 @@ class LearningRPCHandler:
 
 
 def install(recorder: Recorder, *, bot_name: str, stake_currency: str,
-            on_cleanup: Callable[[], Any] | None = None, log: Callable[[str], None] = print) -> FreqtradeAdapter:
+            on_cleanup: Callable[[], Any] | None = None,
+            log: Callable[[str], None] | None = None) -> FreqtradeAdapter:
     """Import freqtrade and hook it. Raises only when freqtrade itself cannot be imported."""
     import freqtrade
     import freqtrade.exceptions as exceptions

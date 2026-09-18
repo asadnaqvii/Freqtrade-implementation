@@ -26,6 +26,13 @@ _lock = threading.Lock()
 REPORT_EVERY_SECONDS = 600
 
 
+def say(message: str) -> None:
+    """The module's log line. Flushed: on Render stdout is a pipe, and a plain
+    print sits in the buffer until it fills -- a ten-minute report that shows
+    up an hour late, and an adapter error that never shows up at all."""
+    print(message, flush=True)
+
+
 def _open_outbox(outbox_path: str):
     from app.learning.outbox import SqliteOutbox
 
@@ -50,7 +57,7 @@ def start(outbox_path: str, client, *, interval: float = 2.0):
 
 def install(client, *, outbox_path: str, identity: dict, environment: str, exchange: str,
             strategy_id: str, bot_name: str, stake_currency: str, dry_run: bool = False,
-            interval: float = 2.0, log=print):
+            interval: float = 2.0, log=say):
     """Start recording: the outbox, the writer (when there is a client), the
     recorder, and the freqtrade hooks. Idempotent; returns the recorder.
 

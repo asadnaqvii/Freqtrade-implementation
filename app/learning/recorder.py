@@ -71,7 +71,7 @@ class Recorder:
     def __init__(self, outbox: Any, identity: dict, *, environment: str, exchange: str,
                  strategy_id: str, provenance: dict | None = None,
                  clock: Callable[[], datetime] | None = None,
-                 log: Callable[[str], None] = print) -> None:
+                 log: Callable[[str], None] | None = None) -> None:
         self.outbox = outbox
         self.identity = identity
         self.environment = environment
@@ -79,7 +79,7 @@ class Recorder:
         self.strategy_id = strategy_id
         self.provenance: dict = dict(provenance or {})
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._log = log
+        self._log = log or (lambda message: print(message, flush=True))
         self._lock = threading.RLock()
         self._decisions: OrderedDict[str, str] = OrderedDict()
         self._info: dict[str, dict] = {}

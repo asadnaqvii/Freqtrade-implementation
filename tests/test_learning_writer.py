@@ -317,3 +317,24 @@ def test_importing_every_submodule_leaves_the_front_door_intact():
         importlib.import_module(f"app.learning.{module.name}")
     for name in ("start", "flush", "health", "current_outbox", "current_writer"):
         assert callable(getattr(learning, name)), name
+
+
+def test_the_modules_log_lines_are_flushed(capsys):
+    """Render buffers a plain print; a report that arrives an hour late is no report."""
+    import io
+
+    lines = []
+
+    class Pipe(io.StringIO):
+        def flush(self):
+            lines.append(self.getvalue())
+            super().flush()
+
+    import sys
+    real = sys.stdout
+    sys.stdout = Pipe()
+    try:
+        learning.say("learning: hello")
+    finally:
+        sys.stdout = real
+    assert lines and lines[-1].startswith("learning: hello")
