@@ -91,13 +91,16 @@ select
     where d.bot_instance_id = s.bot_instance_id
       and d.decision_time_utc > now() - interval '24 hours'
       and not exists (select 1 from public.trading_events e where e.decision_id = d.decision_id)) as decisions_without_events_24h,
+  (select max(d.decision_time_utc) from public.trading_decisions d
+    where d.bot_instance_id = s.bot_instance_id) as last_decision_at,
+  -- Added after the view first shipped. New columns go at the end: `create or
+  -- replace view` refuses to reorder or rename existing ones, and this file
+  -- must apply cleanly to a database that already has the view.
   (select count(*) from public.trading_events e
     where e.bot_instance_id = s.bot_instance_id
       and e.decision_id is not null
       and e.event_time_utc > now() - interval '24 hours'
-      and not exists (select 1 from public.trading_decisions d where d.decision_id = e.decision_id)) as events_orphaned_24h,
-  (select max(d.decision_time_utc) from public.trading_decisions d
-    where d.bot_instance_id = s.bot_instance_id) as last_decision_at
+      and not exists (select 1 from public.trading_decisions d where d.decision_id = e.decision_id)) as events_orphaned_24h
 from public.learning_writer_status s;
 
 -- A new view gets Supabase's default ALL for every API role. It runs as the
