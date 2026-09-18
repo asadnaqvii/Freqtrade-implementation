@@ -171,5 +171,21 @@ def reconcile(
         )
     except Exception as exc:  # noqa: BLE001 - the bot must trade regardless
         log.warning("could not record the reconciliation: %s", exc)
+        return outcome
+
+    # The same verdicts, on the decisions that placed the orders. Only when the
+    # Learning Module is on: its tables may not exist otherwise.
+    try:
+        from app.core.config import get_settings
+
+        if get_settings().learning.enabled and getattr(outcome, "run_id", None):
+            from app.learning import verification_link
+
+            verification_link.record_reconciliation(
+                client, run_id=outcome.run_id, bot_instance_id=bot_instance_id, owner_id=owner_id,
+                findings=findings, account_id=account.get("id"),
+            )
+    except Exception as exc:  # noqa: BLE001 - a link that fails costs nothing but the link
+        log.info("could not link the reconciliation to decisions: %s", exc)
 
     return outcome

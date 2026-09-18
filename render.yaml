@@ -80,6 +80,12 @@ services:
         sync: false
       - key: PLATFORM_OWNER_ID
         sync: false
+      # The Learning Module: records every trading decision, why, and what came
+      # of it (docs/LEARNING.md). Off in production until it has run clean on
+      # staging for a week; flip it here, redeploy, and the Trading memory tab
+      # fills.
+      - key: LEARNING_ENABLED
+        value: "false"
       # Same value as on freqtrade-app: the bot records this as its address so
       # the dashboard knows where to reach it.
       - key: FREQTRADE_API_BASE_URL

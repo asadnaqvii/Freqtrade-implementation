@@ -153,3 +153,9 @@ def test_the_health_view_is_read_only_for_everyone():
     for privileges, objects, _roles in grants(HEALTH):
         if "public.v_learning_health" in objects:
             assert privileges == {"select"}
+
+
+def test_the_incident_kind_migration_is_idempotent_and_listed():
+    sql = (MIGRATIONS / "0029_learning_incident.sql").read_text()
+    assert "add value if not exists 'learning_stalled'" in sql
+    assert "0029_learning_incident.sql" in (MIGRATIONS / "README.md").read_text()

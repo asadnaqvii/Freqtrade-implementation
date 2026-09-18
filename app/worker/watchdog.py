@@ -48,6 +48,10 @@ NOTIFY_KINDS = {"offline", "not_trading"}
 #: one was the whole alerting story of a five-day outage.
 REPAGE_AFTER_SECONDS = 1800
 
+#: The kinds this module opens, and therefore the only ones it resolves. Other
+#: modules (the learning watch) open their own and close their own.
+OWNED_KINDS = set(ALARMING.values()) | {"not_trading", "stopped_with_positions"}
+
 #: Statuses a heartbeating bot can report that mean it is not trading. "hung"
 #: is the bot's own verdict on itself: alive enough to answer, its trading
 #: loop not going round.
@@ -189,7 +193,7 @@ def _resolve_incidents(client, bot: dict, keep: set[str],
         return
 
     for row in open_rows:
-        if row.get("kind") in keep:
+        if row.get("kind") in keep or row.get("kind") not in OWNED_KINDS:
             continue
         opened = row.get("opened_at")
         seconds = None

@@ -14,13 +14,33 @@ background writer ships the queue to Supabase on its own schedule.
 |---|---|---|
 | 1 | Contracts: the decision record, the event record, ids, keys, canonical form (`app/learning/contracts.py`, `ids.py`, `keys.py`, `canonical.py`, `provenance.py`) | done |
 | 2 | Storage: the evidence tables (`0027`), the health table and view (`0028`), the outbox and writer (`app/learning/outbox.py`, `writer.py`) | done |
-| 3 | Capture: an adapter that records decisions at the moment freqtrade acts, without touching the strategy files | next |
-| 4 | Lifecycle: orders, fills and positions linked back to their decision, surviving restarts | next |
-| 5 | Verification linkage: every reconciliation run referenced from the decision it checked | next |
-| 6 | The Trading memory tab: raw JSON of every record, with everything around it explained | next |
+| 3 | Capture: `app/learning/freqtrade_adapter.py` hooks freqtrade's own classes (signals, locks, stake checks, entries, exits, orders, fills, RPC messages) and records decisions the moment the bot acts; `recorder.py` and `snapshots.py` are the freqtrade-free core | done |
+| 4 | Lifecycle: orders, fills and positions linked back to their decision; the link is kept in freqtrade's own `trade_custom_data`, so it survives a redeploy; a position the module did not see opened is recorded as `unlinked_position_observed`, never given an invented decision | done |
+| 5 | Verification linkage: `verification_link.py` writes every reconciliation run's verdicts as events on the decisions that placed the orders; the Verification tab's chain names the decision and the rejection reason | done |
+| 6 | The Trading memory tab and `/api/learning`: the raw JSON of every record, with a sentence for every field, stage, reason and number | done |
 
-Nothing is captured until phase 3 lands, so the tables stay empty in every
-environment until then. `LEARNING_ENABLED` is `false` everywhere.
+Nothing is captured unless `LEARNING_ENABLED` is `true` on the bot. It is
+off in production and on for the staging soak. Everything the module
+records for a strategy that was not touched: the hooks sit on freqtrade's
+classes, not on the strategy file.
+
+## How a decision is captured
+
+| freqtrade does | the adapter records |
+|---|---|
+| `get_entry_signal` returns a signal | opens the decision (one per pair per candle) and `signal_generated` |
+| `is_pair_locked` says yes | `signal_rejected` PAIR_LOCKED, with the lock |
+| the wallet refuses or shrinks the stake | `signal_rejected` INSUFFICIENT_BALANCE / INSUFFICIENT_STAKE / MIN_NOTIONAL |
+| `execute_entry` / `execute_trade_exit` run | `bot_instruction_created` with stake, price and reason |
+| `Exchange.create_order` runs | `order_submitted`, then `order_acknowledged` or `order_rejected` |
+| the ENTRY message names the trade | the trade is linked to the decision and the link written to `trade_custom_data` |
+| `order_filled` fires | `fill_completed` (or `partial_fill`), with both order ids |
+| ENTRY_FILL / EXIT_FILL messages | `position_opened`, `position_adjusted`, `position_closed` |
+| a pass ends with signals the bot never brought to `create_trade` | a decision per skipped signal, rejected MAX_OPEN_TRADES, GLOBAL_PAIRLOCK, POSITION_ALREADY_OPEN or BOT_PAUSED, marked `derivation: whitelist_scan` |
+| protections fire, the bot changes state | `risk_decision`, `bot_status`, with no decision |
+
+Every hook passes freqtrade's result and exceptions through untouched and
+counts its own failures (`adapter_errors` in the health row and the log).
 
 ## The two tables
 
@@ -94,6 +114,22 @@ hours -- `decisions_24h`, `events_24h`, `events_without_decision_24h`,
 is fine" and "decisions are arriving" are shown together, and a pipeline that
 died quietly shows as a fresh status row next to a stale `last_decision_at`.
 
+## Reading it
+
+The **Trading memory** tab on the dashboard lists every decision with a
+one-line headline ("Wanted to enter TRX/USDT on the 08:00 candle, tagged
+pullback, but did not: the pair was locked by a protection"), filters by
+pair, kind, outcome and indicator value, and opens any decision to show
+the full raw record, a timeline of its events with a sentence per stage,
+and a glossary entry for every key. The same data is at `/api/learning/...`
+for anything that prefers JSON.
+
+The worker checks the pipeline every five minutes and opens a
+`learning_stalled` incident on the Live bot tab when records pile up on the
+bot, when the database refuses them, or when the strategy keeps signalling
+while no decision has been recorded for a day. It prunes records past
+retention once a day.
+
 ## Exercising it
 
 `scripts/learning_smoke.py` is the synthetic source: it ships one made-up
@@ -110,7 +146,7 @@ SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... python scripts/learning_smoke.py 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LEARNING_ENABLED` | `false` | Capture decisions inside the bot (phase 3) |
+| `LEARNING_ENABLED` | `false` | Capture decisions inside the bot |
 | `LEARNING_OUTBOX_PATH` | `user_data/learning_outbox.sqlite` | The local queue |
 | `LEARNING_WRITE_INTERVAL_SECONDS` | `2` | How often the writer ships |
 

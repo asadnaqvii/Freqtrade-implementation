@@ -10,21 +10,28 @@ from __future__ import annotations
 from enum import Enum
 
 
-class DecisionKind(str, Enum):
+class _Vocabulary(str, Enum):
+    """A str Enum whose str() is its value, so it is a plain word on the wire."""
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+class DecisionKind(_Vocabulary):
     ENTRY = "entry"
     EXIT = "exit"
     ADD = "add"
     REDUCE = "reduce"
 
 
-class StrategyIntent(str, Enum):
+class StrategyIntent(_Vocabulary):
     ENTER_LONG = "enter_long"
     ENTER_SHORT = "enter_short"
     EXIT_LONG = "exit_long"
     EXIT_SHORT = "exit_short"
 
 
-class EventType(str, Enum):
+class EventType(_Vocabulary):
     # strategy
     SIGNAL_GENERATED = "signal_generated"
     SIGNAL_REJECTED = "signal_rejected"
@@ -53,14 +60,14 @@ class EventType(str, Enum):
     BOT_STATUS = "bot_status"
 
 
-class EventSource(str, Enum):
+class EventSource(_Vocabulary):
     FREQTRADE_RPC = "freqtrade_rpc"
     FREQTRADE_CALLBACK = "freqtrade_callback"
     LEARNING_ADAPTER = "learning_adapter"
     VERIFIER = "verifier"
 
 
-class RejectionStage(str, Enum):
+class RejectionStage(_Vocabulary):
     STRATEGY = "strategy"
     BOT = "bot"
     RISK = "risk"
@@ -69,7 +76,7 @@ class RejectionStage(str, Enum):
     SYSTEM = "system"
 
 
-class RejectionCode(str, Enum):
+class RejectionCode(_Vocabulary):
     MAX_OPEN_TRADES = "MAX_OPEN_TRADES"
     PAIR_LOCKED = "PAIR_LOCKED"
     GLOBAL_PAIRLOCK = "GLOBAL_PAIRLOCK"
@@ -90,7 +97,7 @@ class RejectionCode(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class DataQuality(str, Enum):
+class DataQuality(_Vocabulary):
     COMPLETE = "COMPLETE"
     PARTIAL = "PARTIAL"
     LATE = "LATE"

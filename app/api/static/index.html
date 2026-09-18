@@ -364,6 +364,27 @@
     position:sticky; top:0; z-index:50; padding:6px 12px; text-align:center;
     background:var(--warn); color:#fff; font-weight:600; letter-spacing:.02em;
   }
+  /* trading memory */
+  .json { max-height:440px; overflow:auto; font-size:11.5px; line-height:1.45; background:var(--bg);
+          padding:12px 14px; border-radius:var(--radius-sm); white-space:pre; margin:0; }
+  .json .jk { color:var(--accent); cursor:help; border-bottom:1px dotted var(--accent); }
+  .jsonbox { position:relative; margin-top:6px; } .jsonbox > button { position:absolute; right:10px; top:8px; }
+  .tl { border-left:2px solid var(--line-soft); margin:6px 0 0 8px; padding-left:18px; }
+  .tl .step { position:relative; padding:4px 0 14px; }
+  .tl .step::before { content:""; position:absolute; left:-25px; top:9px; width:10px; height:10px;
+                      border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+  .tl .step.bad::before { background:var(--bad, #c0392b); }
+  .tl .stage { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+  .tl .what { font-weight:600; font-size:13px; } .tl .when { color:var(--muted); font-size:11.5px; margin-left:8px; }
+  .tl .why { color:var(--text-2); font-size:12.5px; margin:2px 0 4px; }
+  .tl details summary { cursor:pointer; font-size:11.5px; color:var(--muted); }
+  .tl .json { max-height:260px; margin-top:6px; }
+  .glossary dt { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; margin-top:8px; color:var(--text); }
+  .glossary dd { margin:0; color:var(--text-2); font-size:12.5px; }
+  #lm-rows tr { cursor:pointer; } #lm-rows tr:hover td { background:var(--panel-2); }
+  #lm-rows td.what { white-space:normal; min-width:280px; max-width:520px; font-size:12px; color:var(--text-2); }
+  .about summary { cursor:pointer; font-size:12.5px; color:var(--accent); }
+  .about ul { margin:8px 0 0; padding-left:18px; font-size:12.5px; color:var(--text-2); } .about li { margin:5px 0; }
 </style>
 </head>
 <body>
@@ -392,6 +413,7 @@
   <button data-tab="backtests">Backtesting</button>
   <button data-tab="wallets">Verification</button>
   <button data-tab="bots">Live bot</button>
+  <button data-tab="learning">Trading memory</button>
 </nav>
 
 <main>
@@ -957,6 +979,108 @@
           <pre id="bot-log" class="muted">Loading&hellip;</pre>
         </div>
       </div>
+    </div>
+  </section>
+  <section id="learning">
+    <div class="card">
+      <h2>What this tab is</h2>
+      <p class="hint">Every decision the bot made, why it made it, and what came of it &mdash;
+        recorded at the moment it decided, from the exact indicator values its rules were applied
+        to. The bot writes these records; nothing here can change them, and nothing here trades.
+        Each record is shown as the raw JSON that was stored, with a plain-language line beside it
+        and an explanation for every field.</p>
+      <details class="about">
+        <summary>How to read a decision</summary>
+        <ul>
+          <li><strong>A decision</strong> is one moment the strategy wanted something: to enter a
+            pair, leave a position, add to it or reduce it. One per pair per candle, however many
+            times the bot re-checked that candle.</li>
+          <li><strong>The outcome</strong> is what became of it: executed, placed, rejected,
+            cancelled, or still just a signal. A rejection always carries a reason in plain words:
+            the pair was locked, every slot was full, the stake was too small, the exchange refused.</li>
+          <li><strong>The timeline</strong> is every event that followed, in order: signal, the bot's
+            instruction, the order, the exchange's acknowledgement, the fill, the position, the exit,
+            and the verifier's verdict. Each stage says in one sentence what it means, and shows its
+            raw JSON underneath.</li>
+          <li><strong>The snapshots</strong> are what the bot saw: the candle (market context), every
+            indicator value (feature snapshot), what it held (portfolio snapshot), and what
+            constrained it (risk snapshot). They are point-in-time: nothing from after the decision
+            can appear in them, and a record that fails that check is kept aside as quarantined.</li>
+          <li><strong>What it never does:</strong> it never trades, never edits the strategy, never
+            invents a decision for a position it did not see opened, and never deletes a record
+            except through a scheduled retention prune.</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>Is the pipeline working?</h2>
+      <p class="hint" id="lm-health-note">The bot publishes this once a minute while the module is on.
+        Hover a number for what it means.</p>
+      <div class="kpis" id="lm-health"><div class="empty">&mdash;</div></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">Decisions</h2>
+        <span style="flex:1"></span>
+        <select id="lm-days" style="width:auto">
+          <option value="1">Last day</option>
+          <option value="7" selected>Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <div class="row">
+        <div><label for="lm-pair">Pair</label><input id="lm-pair" placeholder="any, e.g. TRX/USDT"></div>
+        <div><label for="lm-kind">Kind</label>
+          <select id="lm-kind"><option value="">any</option><option value="entry">entry</option>
+            <option value="exit">exit</option><option value="add">add</option><option value="reduce">reduce</option></select></div>
+        <div><label for="lm-outcome">Outcome</label>
+          <select id="lm-outcome"><option value="">any</option><option value="executed">executed</option>
+            <option value="rejected">rejected</option><option value="placed">placed</option>
+            <option value="cancelled">cancelled</option><option value="signalled">signalled only</option>
+            <option value="quarantined">quarantined</option></select></div>
+        <div><label for="lm-feature">Indicator filter</label>
+          <input id="lm-feature" placeholder="e.g. rsi:gt:60 (gt, gte, lt, lte, eq, ne)"></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="lm-apply">Show</button>
+        <span class="muted" style="font-size:12px;align-self:center">Click a row to open the full
+          record. Hover an outcome or a reason for what it means.</span></div>
+      <div class="kpis" id="lm-kpis"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Decided</th><th>Pair</th><th>Kind</th><th>Outcome</th><th>Reason</th><th>What happened</th></tr></thead>
+          <tbody id="lm-rows"><tr><td colspan="6" class="empty">&mdash;</td></tr></tbody>
+        </table>
+      </div>
+      <p class="hint" id="lm-note"></p>
+    </div>
+
+    <div class="card" id="lm-detail" hidden>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0" id="lm-detail-title">Decision</h2>
+        <span style="flex:1"></span>
+        <button class="btn tiny" id="lm-close">Close</button>
+      </div>
+      <p class="hint" id="lm-headline"></p>
+      <div class="kpis" id="lm-detail-kpis"></div>
+
+      <h3 class="sub">Timeline</h3>
+      <p class="hint">Every event on this decision, in order. Each stage says what it means; open
+        it for the raw event exactly as recorded.</p>
+      <div class="tl" id="lm-timeline"><div class="empty">No events yet</div></div>
+
+      <h3 class="sub">The full record</h3>
+      <p class="hint">Exactly what was stored, as JSON. Hover a key for what it means; the glossary
+        below lists them all.</p>
+      <div class="jsonbox"><button class="btn tiny" data-copy="lm-json">Copy JSON</button>
+        <pre class="json" id="lm-json"></pre></div>
+      <details><summary>What the fields mean</summary><dl class="kv glossary" id="lm-glossary"></dl></details>
+
+      <h3 class="sub">This position</h3>
+      <p class="hint">Other decisions about the same position, entry to exit.</p>
+      <div id="lm-position"><div class="empty">&mdash;</div></div>
     </div>
   </section>
 </main>
@@ -1646,7 +1770,8 @@ async function loadChain() {
         <td class="num">${o ? fmtNum(o.average ?? o.price, 6) : '<span class="muted">no order</span>'}</td>
         <td>${x ? `<span class="pill ${x.matched ? "ok" : "bad"}">${x.matched ? "agrees" : esc(x.discrepancy_kind || "disputed")}</span>`
                 : '<span class="muted">not checked</span>'}</td>
-        <td><span class="pill ${cls}">${esc(r.outcome.replaceAll("_", " "))}</span></td>
+        <td><span class="pill ${cls}">${esc(r.outcome.replaceAll("_", " "))}</span>${r.rejection_code
+              ? ` <span class="pill neutral" title="${esc(r.rejection_meaning || "")}">${esc(r.rejection_code)}</span>` : ""}</td>
       </tr>`;
     }).join("") : `<tr><td colspan="7" class="empty">${esc(d.note || "Nothing in this window")}</td></tr>`;
 
@@ -3268,10 +3393,187 @@ async function loadRunDetail(runId, run) {
   }
 }
 
+// ── trading memory ───────────────────────────────────────────
+const LEARNING_LOOK = {
+  executed:    ["ok",      "The bot acted and the order filled."],
+  placed:      ["info",    "The order is on the exchange and has not filled yet."],
+  rejected:    ["warn",    "The signal did not become a trade. The reason says why."],
+  cancelled:   ["neutral", "An order was placed and then cancelled before it filled."],
+  signalled:   ["neutral", "The strategy signalled and nothing has happened yet."],
+  quarantined: ["bad",     "The record failed its own consistency check and is kept aside."],
+};
+let learningWords = null;
+
+async function loadLearningWords() {
+  if (learningWords) return learningWords;
+  try { learningWords = await api("/api/learning/glossary"); }
+  catch { learningWords = { fields: {}, events: {}, rejections: {}, outcomes: {}, kinds: {}, intents: {} }; }
+  return learningWords;
+}
+
+// Pretty JSON with every top-level key carrying its meaning as a hover title.
+function jsonWithMeanings(obj, meanings) {
+  let html = esc(JSON.stringify(obj ?? {}, null, 2));
+  for (const key of Object.keys(obj || {})) {
+    const meaning = meanings?.[key];
+    if (!meaning) continue;
+    const needle = `\n  ${esc(JSON.stringify(key))}:`;
+    const at = html.indexOf(needle);
+    if (at < 0) continue;
+    html = html.slice(0, at) + `\n  <span class="jk" title="${esc(meaning)}">${esc(JSON.stringify(key))}</span>:`
+         + html.slice(at + needle.length);
+  }
+  return html;
+}
+
+function learningKpi(label, value, meaning, cls = "") {
+  return `<div class="kpi" title="${esc(meaning || "")}"><div class="k">${esc(label)}</div>
+    <div class="v ${cls}">${value === null || value === undefined ? "—" : esc(value)}</div>
+    <div class="s">${esc(meaning || "")}</div></div>`;
+}
+
+async function loadLearningHealth() {
+  const words = await loadLearningWords();
+  try {
+    const h = await api("/api/learning/health");
+    const bot = (h.bots || [])[0];
+    if (!bot) {
+      $("lm-health").innerHTML = `<div class="empty">${esc(h.note || "Nothing published yet")}</div>`;
+      return;
+    }
+    const m = h.meaning || {};
+    const age = bot.reported_at ? Math.round((Date.now() - new Date(bot.reported_at)) / 60000) : null;
+    $("lm-health").innerHTML = [
+      ["Decisions, last day", bot.decisions_24h, m.decisions_24h, ""],
+      ["Events, last day", bot.events_24h, m.events_24h, ""],
+      ["Waiting on the bot", bot.outbox_pending, m.outbox_pending, Number(bot.outbox_pending) > 50 ? "neg" : ""],
+      ["Refused by the database", bot.outbox_quarantined, m.outbox_quarantined, Number(bot.outbox_quarantined) ? "neg" : ""],
+      ["Events without a decision", bot.events_without_decision_24h, m.events_without_decision_24h,
+        Number(bot.events_without_decision_24h) ? "neg" : ""],
+      ["Kept aside", bot.quarantined_24h, m.quarantined_24h, Number(bot.quarantined_24h) ? "neg" : ""],
+      ["Last decision", bot.last_decision_at ? shortDate(bot.last_decision_at) : "none yet", m.last_decision_at, ""],
+      ["Bot reported", age === null ? "—" : `${age} min ago`, m.reported_at, age !== null && age > 10 ? "neg" : ""],
+    ].map(a => learningKpi(...a)).join("");
+    $("lm-health-note").textContent = bot.last_error
+      ? `Last writer error: ${bot.last_error}` : "The bot publishes this once a minute while the module is on. Hover a number for what it means.";
+  } catch (e) {
+    $("lm-health").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadLearning() {
+  await loadLearningHealth();
+  const words = await loadLearningWords();
+  const q = new URLSearchParams({ days: $("lm-days").value || 7 });
+  for (const [id, key] of [["lm-pair", "pair"], ["lm-kind", "kind"], ["lm-outcome", "outcome"], ["lm-feature", "feature"]]) {
+    const v = $(id).value.trim();
+    if (v) q.append(key, v);
+  }
+  try {
+    const d = await api(`/api/learning/decisions?${q}`);
+    const c = d.counts || {};
+    $("lm-kpis").innerHTML = [
+      ["Executed", c.executed ?? 0, words.outcomes?.executed, c.executed ? "pos" : ""],
+      ["Rejected", c.rejected ?? 0, words.outcomes?.rejected, ""],
+      ["Placed", c.placed ?? 0, words.outcomes?.placed, ""],
+      ["Signal only", (c.signalled ?? 0) + (c.cancelled ?? 0), words.outcomes?.signalled, ""],
+      ["Kept aside", c.quarantined ?? 0, words.outcomes?.quarantined, c.quarantined ? "neg" : ""],
+    ].map(a => learningKpi(...a)).join("");
+
+    const items = d.items || [];
+    $("lm-rows").innerHTML = items.length ? items.map(({ decision: r, summary: s }) => {
+      const [cls, reading] = LEARNING_LOOK[s.outcome] || ["neutral", s.outcome];
+      return `<tr data-decision="${esc(r.decision_id)}">
+        <td class="muted">${shortDate(r.decision_time_utc)}</td>
+        <td><strong>${esc(r.symbol)}</strong></td>
+        <td class="muted" title="${esc(words.kinds?.[r.decision_kind] || "")}">${esc(r.decision_kind)}
+            <span class="muted">${esc((r.strategy_intent || "").replace("_", " "))}</span></td>
+        <td><span class="pill ${cls}" title="${esc(reading)}">${esc(s.outcome)}</span></td>
+        <td>${s.reason ? `<span class="pill neutral" title="${esc(s.reason_meaning)}">${esc(s.reason)}</span>` : '<span class="muted">—</span>'}</td>
+        <td class="what">${esc(s.headline)}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" class="empty">${esc(d.note || "No decisions in this window")}</td></tr>`;
+    $("lm-note").textContent = d.note
+      || `${d.total} decision(s) over ${d.days} days` + (d.scan_capped ? " (the window was capped at 500; narrow it to see everything)." : ".");
+    document.querySelectorAll("#lm-rows tr[data-decision]").forEach(tr =>
+      tr.onclick = () => openDecision(tr.dataset.decision).catch(e => toast(e.message, true)));
+  } catch (e) {
+    $("lm-rows").innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function timelineStep(t, words) {
+  const bad = ["signal_rejected", "order_rejected", "order_cancelled"].includes(t.event_type);
+  const reason = t.reason ? `<div class="why"><strong>${esc(t.reason)}</strong> — ${esc(t.reason_meaning || words.rejections?.[t.reason] || "")}</div>` : "";
+  return `<div class="step ${bad ? "bad" : ""}">
+    <div class="stage">${esc(t.stage)}</div>
+    <div><span class="what">${esc((t.event_type || "").replaceAll("_", " "))}</span>
+         <span class="when">${shortDate(t.event_time_utc)}</span></div>
+    <div class="why">${esc(t.meaning || "")}</div>${reason}
+    <details><summary>raw event</summary><pre class="json">${jsonWithMeanings(t.event, words.fields)}</pre></details>
+  </div>`;
+}
+
+async function openDecision(id) {
+  const words = await loadLearningWords();
+  const d = await api(`/api/learning/decisions/${encodeURIComponent(id)}`);
+  const r = d.decision, s = d.summary;
+  const [cls] = LEARNING_LOOK[s.outcome] || ["neutral"];
+  $("lm-detail").hidden = false;
+  $("lm-detail-title").textContent = `${r.symbol} · ${r.decision_kind} · ${shortDate(r.decision_time_utc)}`;
+  $("lm-headline").textContent = s.headline;
+  $("lm-detail-kpis").innerHTML = [
+    ["Outcome", s.outcome, s.outcome_meaning, cls === "ok" ? "pos" : cls === "bad" ? "neg" : ""],
+    ["Reason", s.reason || "—", s.reason_meaning || "No rejection on this decision.", ""],
+    ["Candle", (r.market_context || {}).candle_open ? shortDate(r.market_context.candle_open) : "—", words.fields?.market_context, ""],
+    ["Events", s.events, "How many events are attached to this decision.", ""],
+  ].map(a => learningKpi(...a)).join("");
+  $("lm-timeline").innerHTML = (d.timeline || []).length
+    ? d.timeline.map(t => timelineStep(t, words)).join("")
+    : '<div class="empty">No events yet</div>';
+  $("lm-json").innerHTML = jsonWithMeanings(r, words.fields);
+  $("lm-glossary").innerHTML = Object.entries(d.explanations?.decision || {})
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  $("lm-position").innerHTML = '<div class="empty">Loading…</div>';
+  if (r.position_id) {
+    try {
+      const p = await api(`/api/learning/positions/${encodeURIComponent(r.position_id)}`);
+      const others = (p.decisions || []);
+      $("lm-position").innerHTML = others.length ? `<table><thead><tr><th>Decided</th><th>Kind</th><th>Outcome</th><th>What happened</th></tr></thead><tbody>`
+        + others.map(({ decision: o, summary: os }) => {
+            const [ocls] = LEARNING_LOOK[os.outcome] || ["neutral"];
+            return `<tr data-decision="${esc(o.decision_id)}" ${o.decision_id === r.decision_id ? 'style="opacity:.6"' : ""}>
+              <td class="muted">${shortDate(o.decision_time_utc)}</td><td>${esc(o.decision_kind)}</td>
+              <td><span class="pill ${ocls}">${esc(os.outcome)}</span></td><td class="what">${esc(os.headline)}</td></tr>`;
+          }).join("") + "</tbody></table>"
+        : '<div class="empty">Only this decision so far</div>';
+      document.querySelectorAll("#lm-position tr[data-decision]").forEach(tr =>
+        tr.onclick = () => openDecision(tr.dataset.decision).catch(e => toast(e.message, true)));
+    } catch (e) {
+      $("lm-position").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  } else {
+    $("lm-position").innerHTML = '<div class="empty">No position id on this decision</div>';
+  }
+  $("lm-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("lm-apply").onclick = () => loadLearning().catch(e => toast(e.message, true));
+$("lm-days").onchange = () => loadLearning().catch(e => toast(e.message, true));
+$("lm-close").onclick = () => { $("lm-detail").hidden = true; };
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  navigator.clipboard.writeText($(b.dataset.copy).textContent)
+    .then(() => toast("Copied to the clipboard"))
+    .catch(() => toast("Could not copy", true));
+});
+
 async function refreshAll() {
   for (const [name, fn] of Object.entries({ strategies: loadStrategies, runs: loadRuns,
                                             jobs: loadJobs, wallets: loadWallets,
-                                            bots: loadBots, live: loadLive })) {
+                                            bots: loadBots, live: loadLive,
+                                            learning: loadLearning })) {
     try { await fn(); } catch (e) { console.warn(name, e); }
   }
 }

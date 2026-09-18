@@ -41,6 +41,11 @@ REMEMBERED_DECISIONS = 5000
 LOGGED_ERRORS = 20
 
 
+def _plain(value: Any) -> str:
+    """An enum member as its value; anything else as text."""
+    return str(getattr(value, "value", value))
+
+
 @dataclass
 class Opened:
     decision_id: str
@@ -261,15 +266,15 @@ class Recorder:
         """Attach one event. True when it was new. Never raises."""
         try:
             when = event_time or self.now()
-            key = event_key(decision_id=decision_id, event_type=str(event_type),
+            key = event_key(decision_id=decision_id, event_type=_plain(event_type),
                             event_time=key_time or when, order_ref=order_ref or "",
                             discriminator=discriminator or "", bucket_seconds=bucket_seconds)
             info = self._info.get(decision_id or "", {})
             record = TradingEvent(
                 event_id=new_event_id(),
-                event_type=str(event_type),
+                event_type=_plain(event_type),
                 event_time_utc=when.isoformat(),
-                event_source=str(event_source),
+                event_source=_plain(event_source),
                 idempotency_key=key,
                 decision_id=decision_id,
                 owner_id=self.identity.get("owner_id"),
@@ -279,8 +284,8 @@ class Recorder:
                 ft_trade_id=ft_trade_id if ft_trade_id is not None else info.get("ft_trade_id"),
                 ft_order_id=ft_order_id,
                 exchange_order_id=exchange_order_id,
-                rejection_stage=str(rejection_stage) if rejection_stage else None,
-                rejection_code=str(rejection_code) if rejection_code else None,
+                rejection_stage=_plain(rejection_stage) if rejection_stage else None,
+                rejection_code=_plain(rejection_code) if rejection_code else None,
                 payload=sanitise(payload or {}),
             )
             record.validate()

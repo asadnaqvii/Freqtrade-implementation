@@ -121,14 +121,14 @@ class FreqtradeAdapter:
             self._patch(Wallets, "get_trade_stake_amount", on_error=self.on_error_get_trade_stake_amount)
             self._patch(Wallets, "validate_stake_amount", after=self.after_validate_stake_amount)
         if FreqtradeBot is not None:
-            self._patch(FreqtradeBot, "create_trade", after=self.after_create_trade,
-                        on_error=self.on_error_create_trade)
+            self._patch(FreqtradeBot, "create_trade", before=self.remember_bot,
+                        after=self.after_create_trade, on_error=self.on_error_create_trade)
             self._patch(FreqtradeBot, "execute_entry", before=self.before_execute_entry,
                         after=self.after_execute_entry, on_error=self.on_error_execute_entry)
             self._patch(FreqtradeBot, "execute_trade_exit", before=self.before_execute_trade_exit,
                         after=self.after_execute_trade_exit, on_error=self.on_error_execute_trade_exit)
-            self._patch(FreqtradeBot, "process", after=self.after_process)
-            self._patch(FreqtradeBot, "startup", after=self.after_startup)
+            self._patch(FreqtradeBot, "process", before=self.remember_bot, after=self.after_process)
+            self._patch(FreqtradeBot, "startup", before=self.remember_bot, after=self.after_startup)
         if Exchange is not None:
             self._patch(Exchange, "create_order", before=self.before_create_order,
                         after=self.after_create_order, on_error=self.on_error_create_order)
@@ -157,6 +157,10 @@ class FreqtradeAdapter:
         self.patched.append("StrategyResolver.load_strategy")
 
     # -- what the bot holds and what constrains it ---------------------------
+    def remember_bot(self, bot, *args, **kwargs) -> None:
+        """The first hook of a pass runs before anything has handed us the bot."""
+        self.bot = bot
+
     def _timeframe(self) -> str:
         for source in (self.strategy, getattr(self.bot, "strategy", None)):
             timeframe = getattr(source, "timeframe", None)
@@ -610,12 +614,13 @@ class FreqtradeAdapter:
         if trade_id is None:
             return None
         known = self.recorder.trade(int(trade_id))
-        if known is not None and known.get("origin_decision_id"):
+        if known is not None and (known.get("origin_decision_id") or known.get("checked")):
             return known
         decision = self._guard("custom_data.read", self._read_custom, trade, CUSTOM_DATA_DECISION)
         position = self._guard("custom_data.read", self._read_custom, trade, CUSTOM_DATA_POSITION)
         entry = self.recorder.link_trade(int(trade_id), trade.pair, position_id=position,
                                          origin_decision_id=decision)
+        entry["checked"] = True  # one read of trade_custom_data per trade, not one per event
         if not decision:
             self.recorder.record_event(
                 None, EventType.UNLINKED_POSITION_OBSERVED, key_time=getattr(trade, "open_date_utc", None),
@@ -843,11 +848,18 @@ class LearningRPCHandler:
     def __new__(cls, rpc, config, adapter, base=object):
         # Subclass freqtrade's RPCHandler when it is available, so RPCManager
         # sees exactly the shape it expects (name, _config, send_msg, cleanup).
+        # This class comes first in the method order: its __init__ and its
+        # send_msg are the ones that must run.
         if base is not object and not issubclass(cls, base):
-            cls = type("LearningRPCHandler", (base, cls), {})
-        return super(LearningRPCHandler, cls).__new__(cls)
+            cls = type("LearningRPCHandler", (cls, base), {})
+        return object.__new__(cls)
 
     def __init__(self, rpc, config, adapter, base=object) -> None:
+        if base is not object:
+            try:
+                base.__init__(self, rpc, config)
+            except Exception:  # noqa: BLE001 - the attributes are set below regardless
+                pass
         self._rpc = rpc
         self._config = config
         self._adapter = adapter
@@ -867,7 +879,7 @@ def install(recorder: Recorder, *, bot_name: str, stake_currency: str,
             on_cleanup: Callable[[], Any] | None = None, log: Callable[[str], None] = print) -> FreqtradeAdapter:
     """Import freqtrade and hook it. Raises only when freqtrade itself cannot be imported."""
     import freqtrade
-    from freqtrade import exceptions
+    import freqtrade.exceptions as exceptions
     from freqtrade.exchange import Exchange
     from freqtrade.freqtradebot import FreqtradeBot
     from freqtrade.persistence import PairLocks, Trade
