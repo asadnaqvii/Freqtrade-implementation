@@ -23,6 +23,7 @@ Two things this deliberately does not do:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.providers import credentials as creds
@@ -137,11 +138,18 @@ def reconcile(
     if not resolved.present:
         return None
 
+    # Only the orders the venue can still answer for. reconcile_orders compares
+    # against a `lookback_days` window of venue history, so an older order can
+    # only ever come back "missing on the exchange" -- after costing an extra
+    # single-order API call to confirm it. Unbounded, that grows with the trade
+    # history for ever; bounded, the work stays the same size next year.
+    since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
     try:
         orders = client.select(
             "v_live_orders",
             columns="ft_order_id,ft_trade_id,pair,exchange_order_id,status,side,"
                     "price,average,amount,filled,cost,order_date,order_filled_date",
+            filters={"order_date": f"gte.{since}"},
             order="order_date.desc",
             limit=1000,
         )

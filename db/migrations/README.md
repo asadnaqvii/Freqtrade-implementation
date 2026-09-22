@@ -16,6 +16,7 @@ so this list is the record. Every file is idempotent and safe to re-apply.
 | `0027_trading_decisions.sql` | yes | The Learning Module's evidence tables. Append-only: no role may update or delete a row, and `prune_learning_records()` is the one retention path. See `docs/LEARNING.md` |
 | `0028_learning_health.sql` | yes | `learning_writer_status` and `v_learning_health`. Needs 0027 |
 | `0029_learning_incident.sql` | yes | Adds the `learning_stalled` incident kind the worker opens when the Learning Module's pipeline stops |
+| `0030_trim_the_verification_log.sql` | yes | Retention for the verification log, plus a one-off cleanup of the repeated verdicts that filled production. Safe to re-apply; the cleanup finds nothing the second time |
 
 `ft_main` -- freqtrade's own tables -- is created by freqtrade on its first
 connect, not by any file here. A copy of an existing database has to bring
