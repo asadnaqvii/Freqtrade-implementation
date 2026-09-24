@@ -22,6 +22,58 @@ from app.validation.reconcile import reconcile_orders
 
 log = logging.getLogger(__name__)
 
+#: How many recent verdicts to read back before writing new ones. Comfortably
+#: more than one reconciliation produces, so the comparison below sees the
+#: current verdict for every order this run touches.
+VERDICT_LOOKBACK_ROWS = 2000
+
+
+def _order_key(row: dict[str, Any]) -> tuple:
+    """What makes a finding about *this* order rather than another."""
+    return (row.get("pair"),
+            str(row.get("ft_order_id") or ""),
+            str(row.get("exchange_order_id") or ""))
+
+
+def _recorded_verdict(row: dict[str, Any]) -> tuple:
+    """The part of a finding that can actually change between runs.
+
+    Not `_verdict`: that name already belongs to the function further down
+    that decides a whole run's status.
+    """
+    return (bool(row.get("matched")), row.get("discrepancy_kind"), row.get("notes"))
+
+
+def only_new_verdicts(client, rows, bot_instance_id):
+    """Drop findings that repeat the verdict already on record.
+
+    Reconciliation re-checks every order it knows about on every run, and an
+    order that closed last week will answer the same way for ever. Writing
+    that answer afresh each hour is what turned 142 real orders into 46,935
+    rows on production, on the smallest database Supabase sells.
+
+    A changed verdict is still written, so the history of what changed stays
+    complete; only the repeats are skipped. If the read fails, everything is
+    written, because losing a genuine change costs more than a duplicate row.
+    """
+    if not rows:
+        return []
+    filters = {"bot_instance_id": f"eq.{bot_instance_id}"} if bot_instance_id else None
+    try:
+        known = client.select(
+            "order_reconciliations",
+            columns="pair,ft_order_id,exchange_order_id,matched,discrepancy_kind,notes,checked_at",
+            filters=filters, order="checked_at.desc", limit=VERDICT_LOOKBACK_ROWS,
+        )
+    except Exception as exc:  # noqa: BLE001 - a duplicate row beats a lost finding
+        log.info("could not read the previous verdicts (%s); recording all of them", exc)
+        return list(rows)
+
+    latest = {}
+    for row in known:                      # newest first, so the first one wins
+        latest.setdefault(_order_key(row), _recorded_verdict(row))
+    return [r for r in rows if latest.get(_order_key(r)) != _recorded_verdict(r)]
+
 
 @dataclass
 class ValidationOutcome:
@@ -297,10 +349,14 @@ def persist(
         )
 
     if reconciliation:
-        client.insert_chunked(
-            "order_reconciliations",
-            (f.as_row(run_id, bot_instance_id, account_id) for f in reconciliation),
-        )
+        rows = [f.as_row(run_id, bot_instance_id, account_id) for f in reconciliation]
+        changed = only_new_verdicts(client, rows, bot_instance_id)
+        if changed:
+            client.insert_chunked("order_reconciliations", changed)
+        skipped = len(rows) - len(changed)
+        if skipped:
+            log.info("reconciliation: %s verdict(s) unchanged and not rewritten, %s recorded",
+                     skipped, len(changed))
 
     # Stamp the account so the UI can show "verified 3 minutes ago" without a join.
     if account_id:

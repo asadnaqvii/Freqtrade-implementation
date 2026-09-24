@@ -12,7 +12,8 @@ so this list is the record. Every file is idempotent and safe to re-apply.
 | `0014_profile_delegates.sql` | **not yet** | Written, never applied to production. Applying it anywhere else makes `current_profile_id()` differ between environments; apply it to production first, then everywhere |
 | `0015_backtest_coverage.sql` | yes | Two files share the number 0015. This one was written first (2026-08-19) |
 | `0015_service_role_reads_ft_schema.sql` | yes | The second 0015 (2026-08-20). Order between the two does not matter; both are independent |
-| `0016_name_the_oom.sql` … `0025_expose_started_at.sql` | yes | |
+| `0016_name_the_oom.sql` … `0026_incident_paging.sql` | yes | |
+| `0030_trim_the_verification_log.sql` | yes | Retention for the verification log, plus a one-off cleanup of the repeated verdicts that filled production. Safe to re-apply; the cleanup finds nothing the second time |
 
 `ft_main` -- freqtrade's own tables -- is created by freqtrade on its first
 connect, not by any file here. A copy of an existing database has to bring

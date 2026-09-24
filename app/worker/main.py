@@ -64,6 +64,11 @@ IDLE_MAX_POLL_SECONDS = 60
 LOG_PRUNE_SECONDS = 6 * 60 * 60
 LOG_KEEP_DAYS = 90
 
+#: How long a verification run and its findings are kept. Long enough to answer
+#: "what did the exchange say about that trade last month", short enough that
+#: the table cannot grow without limit.
+VALIDATION_KEEP_DAYS = 90
+
 
 #: How quiet a running job must go before it is considered abandoned. The
 #: database default is twenty minutes, which is fine for a crash and far too
@@ -497,9 +502,20 @@ def run_forever() -> None:
         except Exception as exc:  # noqa: BLE001 - housekeeping is never fatal
             log.warning("could not prune security events: %s", exc)
 
+    def prune_validation() -> None:
+        """Trim the verification log to its retention window."""
+        try:
+            removed = client.rpc("prune_validation_records",
+                                 {"p_keep_days": VALIDATION_KEEP_DAYS})
+            if removed:
+                log.info("pruned %s expired validation run(s) and their findings", removed)
+        except Exception as exc:  # noqa: BLE001 - housekeeping is never fatal
+            log.warning("could not prune validation records: %s", exc)
+
     sweep_stalled()
     sweep_bots()
     prune_logs()
+    prune_validation()
     ping_heartbeat()
     last_sweep = time.monotonic()
     last_watch = time.monotonic()
@@ -520,6 +536,7 @@ def run_forever() -> None:
 
         if time.monotonic() - last_prune >= LOG_PRUNE_SECONDS:
             prune_logs()
+            prune_validation()
             last_prune = time.monotonic()
 
         if time.monotonic() - last_ping >= HEARTBEAT_PING_SECONDS:
