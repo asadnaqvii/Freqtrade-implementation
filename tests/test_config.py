@@ -225,3 +225,46 @@ def test_no_fallback_means_none(monkeypatch):
         assert get_settings().freqtrade_db_url_fallback is None
     finally:
         get_settings.cache_clear()
+
+
+def test_learning_is_off_unless_asked(monkeypatch):
+    from app.core.config import get_settings
+
+    for name in ("LEARNING_ENABLED", "LEARNING_OUTBOX_PATH", "LEARNING_WRITE_INTERVAL_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    get_settings.cache_clear()
+    try:
+        learning = get_settings().learning
+        assert learning.enabled is False
+        assert learning.outbox_path.endswith("learning_outbox.sqlite")
+        assert learning.write_interval_seconds == 2.0
+    finally:
+        get_settings.cache_clear()
+
+
+def test_learning_settings_come_from_the_environment(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("LEARNING_ENABLED", "true")
+    monkeypatch.setenv("LEARNING_OUTBOX_PATH", "/data/learning/outbox.sqlite")
+    monkeypatch.setenv("LEARNING_WRITE_INTERVAL_SECONDS", "0.5")
+    get_settings.cache_clear()
+    try:
+        learning = get_settings().learning
+        assert learning.enabled is True
+        assert learning.outbox_path == "/data/learning/outbox.sqlite"
+        assert learning.write_interval_seconds == 0.5
+    finally:
+        get_settings.cache_clear()
+
+
+def test_a_learning_interval_that_is_not_a_number_is_a_config_error(monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("LEARNING_WRITE_INTERVAL_SECONDS", "soon")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ConfigError, match="LEARNING_WRITE_INTERVAL_SECONDS"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()

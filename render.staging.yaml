@@ -60,9 +60,10 @@ services:
       # hour is often enough to keep proving that.
       - key: SELFCHECK_INTERVAL_SECONDS
         value: "3600"
-      # The Learning Module's switch. Off until its adapter has landed here.
+      # The Learning Module's switch. On here: staging is the soak; production stays off
+      # until it has run clean here for a week.
       - key: LEARNING_ENABLED
-        value: "false"
+        value: "true"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY

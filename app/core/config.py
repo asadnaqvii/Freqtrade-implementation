@@ -45,6 +45,16 @@ def _env_int(name: str, default: int) -> int:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+
+
 @dataclass(frozen=True)
 class SupabaseConfig:
     """How to reach Supabase, both as an API and as a plain Postgres."""
@@ -134,6 +144,25 @@ class WorkerConfig:
     heartbeat_url: str | None = None
 
 
+#: Where the Learning Module queues records before they reach Supabase.
+#: Relative to the working directory, which on Render is the repository root.
+DEFAULT_LEARNING_OUTBOX = "user_data/learning_outbox.sqlite"
+
+
+@dataclass(frozen=True)
+class LearningConfig:
+    """The Learning Module's switches. Off everywhere unless asked.
+
+    `enabled` turns on the capture of trading decisions inside the bot. The
+    outbox is a local SQLite file the trading loop writes to in well under a
+    millisecond; the writer ships it to Supabase every `write_interval_seconds`.
+    """
+
+    enabled: bool = False
+    outbox_path: str = DEFAULT_LEARNING_OUTBOX
+    write_interval_seconds: float = 2.0
+
+
 @dataclass(frozen=True)
 class Settings:
     supabase: SupabaseConfig
@@ -144,6 +173,7 @@ class Settings:
     #: Emails permitted to sign in. Empty means anyone with a valid token,
     #: which is correct only if the Supabase project has sign-ups closed.
     allowed_emails: frozenset[str] = frozenset()
+    learning: LearningConfig = field(default_factory=LearningConfig)
 
     @property
     def freqtrade_db_url(self) -> str | None:
@@ -325,6 +355,12 @@ def get_settings() -> Settings:
         heartbeat_url=_env("WORKER_HEARTBEAT_URL") or None,
     )
 
+    learning = LearningConfig(
+        enabled=_env_bool("LEARNING_ENABLED", False),
+        outbox_path=_env("LEARNING_OUTBOX_PATH", DEFAULT_LEARNING_OUTBOX) or DEFAULT_LEARNING_OUTBOX,
+        write_interval_seconds=_env_float("LEARNING_WRITE_INTERVAL_SECONDS", 2.0),
+    )
+
     origins = _env("CORS_ORIGINS", "")
     cors = [o.strip() for o in (origins or "").split(",") if o.strip()]
 
@@ -332,6 +368,7 @@ def get_settings() -> Settings:
         supabase=supabase,
         bot=bot,
         worker=worker,
+        learning=learning,
         cors_origins=cors,
         log_level=_env("LOG_LEVEL", "INFO") or "INFO",
         allowed_emails=frozenset(

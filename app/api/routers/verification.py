@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 
 from app.api.deps import UserDB
+from app.learning.enums import REJECTION_MEANING
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,22 @@ async def chain(db: UserDB, days: int = 7, pair: str = "") -> dict:
     except Exception as exc:  # noqa: BLE001
         log.info("no reconciliation yet: %s", exc)
 
+    # What the Learning Module recorded, if it is on: the decision behind each
+    # order, and the reason behind each signal that was not acted on.
+    by_order: dict[str, dict] = {}
+    rejections: list[dict] = []
+    try:
+        for event in db.select("trading_events",
+                               columns="decision_id,event_type,exchange_order_id,symbol,event_time_utc,"
+                                       "rejection_code",
+                               filters={"event_time_utc": f"gte.{since}"}, limit=5000):
+            if event.get("exchange_order_id") and event.get("decision_id"):
+                by_order.setdefault(str(event["exchange_order_id"]), event)
+            if event.get("event_type") == "signal_rejected":
+                rejections.append(event)
+    except Exception as exc:  # noqa: BLE001 - the module may be off, or its tables absent
+        log.info("no learning events: %s", exc)
+
     unclaimed = list(orders)
     rows = []
 
@@ -127,6 +144,16 @@ async def chain(db: UserDB, days: int = 7, pair: str = "") -> dict:
             unclaimed.remove(acted)
 
         verdict = verdicts.get(str(acted.get("exchange_order_id") or "")) if acted else None
+        decision_id, rejection_code = None, None
+        if acted is not None:
+            decision_id = (by_order.get(str(acted.get("exchange_order_id") or "")) or {}).get("decision_id")
+        else:
+            for event in rejections:
+                seen = _when(event.get("event_time_utc"))
+                if (event.get("symbol") == signal.get("pair") and bar and seen
+                        and bar <= seen <= bar + window + timedelta(minutes=minutes)):
+                    decision_id, rejection_code = event.get("decision_id"), event.get("rejection_code")
+                    break
         rows.append({
             "bar_time": signal.get("bar_time"),
             "pair": signal.get("pair"),
@@ -137,6 +164,9 @@ async def chain(db: UserDB, days: int = 7, pair: str = "") -> dict:
             "order": acted,
             "exchange": verdict,
             "outcome": _outcome(acted, verdict),
+            "decision_id": decision_id,
+            "rejection_code": rejection_code,
+            "rejection_meaning": REJECTION_MEANING.get(rejection_code or "", "") if rejection_code else "",
         })
 
     # Orders with no signal behind them: a force-exit, a stoploss the dataframe
@@ -153,6 +183,9 @@ async def chain(db: UserDB, days: int = 7, pair: str = "") -> dict:
             "order": order,
             "exchange": verdict,
             "outcome": "order_without_signal",
+            "decision_id": (by_order.get(str(order.get("exchange_order_id") or "")) or {}).get("decision_id"),
+            "rejection_code": None,
+            "rejection_meaning": "",
         })
 
     rows.sort(key=lambda r: str(r.get("bar_time") or ""), reverse=True)

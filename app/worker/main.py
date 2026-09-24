@@ -49,6 +49,11 @@ BOT_WATCH_SECONDS = 60
 #: a ping inside its grace period; two minutes leaves room for a slow sweep.
 HEARTBEAT_PING_SECONDS = 120
 
+#: How often the Learning Module's pipeline is checked for a stall, and how
+#: often its retention prune runs.
+LEARNING_WATCH_SECONDS = 300
+LEARNING_PRUNE_SECONDS = 86400
+
 #: Longest the queue poll backs off to while nothing is queued. The poll ran at
 #: a flat 10s and made 128,897 `claim_backtest_job` calls in sixteen days --
 #: 465 seconds of database CPU and 773k buffer reads, essentially all of it
@@ -512,15 +517,37 @@ def run_forever() -> None:
         except Exception as exc:  # noqa: BLE001 - housekeeping is never fatal
             log.warning("could not prune validation records: %s", exc)
 
+    def watch_learning() -> None:
+        """Notice the Learning Module's pipeline stalling, and say so on the dashboard."""
+        try:
+            from app.worker import learning_watch
+
+            learning_watch.sweep(client)
+        except Exception as exc:  # noqa: BLE001 - never take the worker down for this
+            log.warning("learning watch failed: %s", exc)
+
+    def prune_learning() -> None:
+        """Trim the Learning Module's evidence to its retention window."""
+        try:
+            from app.worker import learning_watch
+
+            learning_watch.prune(client)
+        except Exception as exc:  # noqa: BLE001 - housekeeping is never fatal
+            log.warning("could not prune learning records: %s", exc)
+
     sweep_stalled()
     sweep_bots()
     prune_logs()
     prune_validation()
     ping_heartbeat()
+    watch_learning()
+    prune_learning()
     last_sweep = time.monotonic()
     last_watch = time.monotonic()
     last_prune = time.monotonic()
     last_ping = time.monotonic()
+    last_learning_watch = time.monotonic()
+    last_learning_prune = time.monotonic()
 
     idle_logged = False
     base_poll = max(int(settings.worker.poll_interval_seconds), 1)
@@ -542,6 +569,14 @@ def run_forever() -> None:
         if time.monotonic() - last_ping >= HEARTBEAT_PING_SECONDS:
             ping_heartbeat()
             last_ping = time.monotonic()
+
+        if time.monotonic() - last_learning_watch >= LEARNING_WATCH_SECONDS:
+            watch_learning()
+            last_learning_watch = time.monotonic()
+
+        if time.monotonic() - last_learning_prune >= LEARNING_PRUNE_SECONDS:
+            prune_learning()
+            last_learning_prune = time.monotonic()
 
         try:
             job = client.rpc("claim_backtest_job", {"p_worker": worker_name})

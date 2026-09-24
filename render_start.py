@@ -272,14 +272,25 @@ print(f"exchange key configured: {'yes' if config['exchange']['key'] else 'no'}"
 # ---------------------------------------------------------------------------
 db_url = None
 db_url_fallback = None
+learning_enabled = False
+learning_outbox_path = "user_data/learning_outbox.sqlite"
+learning_write_interval = 2.0
 try:
     from app.core.config import get_settings
 
     settings = get_settings()
     db_url = settings.freqtrade_db_url
     db_url_fallback = settings.freqtrade_db_url_fallback
+    learning_enabled = settings.learning.enabled
+    learning_outbox_path = settings.learning.outbox_path
+    learning_write_interval = settings.learning.write_interval_seconds
 except Exception as exc:
     print(f"WARNING: could not read platform settings ({exc}); using SQLite", flush=True)
+
+#: What the Learning Module stamps on every record. The name is known now;
+#: registration fills in the instance and account ids when it has them.
+learning_identity = {"bot_name": bot_name, "bot_instance_id": None,
+                     "owner_id": _env("PLATFORM_OWNER_ID"), "account_id": None}
 
 # A connection is what holds a Postgres advisory lock, so this has to outlive the
 # function that took it. Module level, deliberately.
@@ -638,6 +649,15 @@ def stand_down(reason, local):
 
     print("trading lock released; waiting for the platform to stop this "
           "instance", flush=True)
+
+    # The replacement is trading; this process has a few seconds to ship what
+    # the Learning Module queued. Bounded, and nothing depends on it.
+    try:
+        import app.learning as _learning
+
+        _learning.flush(5.0)
+    except Exception:  # noqa: BLE001 - the outbox file keeps what did not go
+        pass
 
     # Nothing left to do but wait to be terminated. This runs on a daemon
     # thread, so a SIGTERM from the platform ends it with the process; the
@@ -1170,10 +1190,12 @@ def register_and_heartbeat():
     bot_id = register()
     if bot_id:
         print(f"registered bot instance {bot_id}", flush=True)
+    learning_identity.update(bot_instance_id=bot_id, owner_id=owner_id)
 
     _record_deployment(client, bot_id, owner_id)
 
     account = _link_account(client, bot_id, owner_id) if bot_id and owner_id else None
+    learning_identity["account_id"] = account.get("id") if account else None
     if account:
         threading.Thread(
             target=_selfcheck_loop, args=(client, account, bot_id, owner_id),
@@ -1211,6 +1233,7 @@ def register_and_heartbeat():
                 if not bot_id:
                     continue        # keep trying; the outage may be temporary
                 print(f"registered bot instance {bot_id} (late)", flush=True)
+                learning_identity.update(bot_instance_id=bot_id, owner_id=owner_id)
                 _record_deployment(client, bot_id, owner_id)
             # "running" used to be hardcoded, which made the column a statement
             # that the process exists rather than that it is trading. A bot that
@@ -1241,6 +1264,13 @@ def register_and_heartbeat():
                 )
             except Exception:
                 pass  # a missed heartbeat shows up as 'stale', which is accurate
+            if learning_enabled:
+                try:
+                    import app.learning as _learning
+
+                    _learning.publish_status(client, bot_instance_id=bot_id, owner_id=owner_id)
+                except Exception:  # noqa: BLE001 - the view shows a stale row, which is accurate
+                    pass
 
     threading.Thread(target=beat, daemon=True, name="heartbeat").start()
 
@@ -1664,6 +1694,31 @@ if db_url:
         print("database: errors in the trading loop pause it instead of ending it", flush=True)
 _get_a_handle_on_the_bot()
 
+if db_url and learning_enabled:
+    # Here and not earlier: the adapter imports freqtrade's classes to wrap
+    # them, and importing those before the patch above would bind init_db
+    # before it was made retryable. Nothing in this block can stop the boot.
+    try:
+        import app.learning as learning
+
+        _learning_client = None
+        try:
+            from app.core.supabase import SupabaseClient
+
+            _learning_client = SupabaseClient.service(timeout=15)
+        except Exception as exc:  # noqa: BLE001 - records queue locally until there is one
+            print(f"learning: no Supabase client ({exc}); recording locally only", flush=True)
+        learning.install(
+            _learning_client, outbox_path=learning_outbox_path, interval=learning_write_interval,
+            identity=learning_identity, environment=environment, exchange=exchange_name,
+            strategy_id=strategy, bot_name=bot_name, stake_currency=config["stake_currency"],
+            dry_run=dry_run,
+        )
+        print(f"learning: recording trading decisions to {learning_outbox_path}"
+              + ("" if _learning_client else " (writer idle until a service key is set)"), flush=True)
+    except Exception as exc:  # noqa: BLE001 - the module must never cost a boot
+        print(f"WARNING: learning module not installed ({exc}); trading is unaffected", flush=True)
+
 from freqtrade.main import main as freqtrade_main
 
 # freqtrade's main() exits the interpreter itself, so the old wrapper that
@@ -1684,6 +1739,12 @@ except BaseException:  # noqa: BLE001 - it is over either way; say why on the wa
     traceback.print_exc()
     code = 1
 finally:
+    try:
+        import app.learning as _learning
+
+        _learning.flush(10.0)
+    except Exception:  # noqa: BLE001 - the outbox file keeps what did not go
+        pass
     print(f"freqtrade has finished; exiting {code}", flush=True)
     sys.stdout.flush()
     sys.stderr.flush()

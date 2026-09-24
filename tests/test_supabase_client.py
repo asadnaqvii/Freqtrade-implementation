@@ -108,3 +108,31 @@ def test_unfiltered_delete_is_refused():
     db = SupabaseClient("token")
     with pytest.raises(ValueError, match="refusing an unfiltered delete"):
         db.delete("trade_archive", filters={})
+
+
+def test_insert_new_only_asks_postgrest_to_skip_duplicates_and_return_nothing(monkeypatch):
+    seen = {}
+
+    def fake_request(self, method, url, **kwargs):
+        seen.update(method=method, url=url, **kwargs)
+        return httpx.Response(201, text="", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx.Client, "request", fake_request)
+    db = SupabaseClient("token")
+    assert db.insert_new_only("trading_events", {"idempotency_key": "e"},
+                              on_conflict="idempotency_key") is None
+    assert seen["method"] == "POST"
+    assert seen["url"].endswith("/trading_events")
+    assert seen["params"] == {"on_conflict": "idempotency_key"}
+    # ON CONFLICT DO NOTHING -- never merge-duplicates, which is an UPDATE the
+    # append-only tables refuse.
+    assert seen["headers"]["Prefer"] == "resolution=ignore-duplicates,return=minimal"
+    assert seen["json"] == [{"idempotency_key": "e"}]
+
+
+def test_insert_new_only_still_raises_when_the_database_refuses(monkeypatch):
+    db = client_with(monkeypatch, 400, {"message": "invalid input value for enum decision_kind"})
+    with pytest.raises(SupabaseError) as exc:
+        db.insert_new_only("trading_decisions", [{"decision_kind": "sideways"}],
+                           on_conflict="idempotency_key")
+    assert exc.value.status == 400

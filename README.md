@@ -45,6 +45,10 @@ application tables, every one RLS-protected and owner-scoped.
    see [`docs/DATA_MIGRATION.md`](docs/DATA_MIGRATION.md).
 3. **Deploy.** `render.yaml` is a complete blueprint. See
    [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+Using and testing the platform day to day, including the staging copy and the
+Learning Module: [`docs/USING.md`](docs/USING.md), [`docs/STAGING.md`](docs/STAGING.md),
+[`docs/LEARNING.md`](docs/LEARNING.md).
 4. **Sign in, connect your wallet, run a verification.**
 
 ### If you are deploying to Render and using KuCoin
