@@ -88,3 +88,6 @@ coverage.xml
 !user_data/logs/.gitkeep
 !user_data/backtest_results/.gitkeep
 !config/templates/.gitkeep
+
+# Local virtualenv
+.venv/
